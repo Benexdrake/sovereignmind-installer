@@ -109,7 +109,7 @@ und startet den Stack. Erneutes Ausführen aktualisiert auf die neueste Version.
 | Variable | Bedeutung | Standard |
 |---|---|---|
 | `SOVEREIGNMIND_GHCR_TOKEN` | Zugangstoken (`read:packages`) | – |
-| `GITHUB_USER` | Benutzername zum Token | vom Anbieter vorgegeben |
+| `GITHUB_USER` | Benutzername für `docker login` (optional) | `Benexdrake` |
 | `SOVEREIGNMIND_DIR` | Installationsverzeichnis | `./sovereignmind` |
 | `SOVEREIGNMIND_REF` | Version (Tag oder Branch) | `main` |
 

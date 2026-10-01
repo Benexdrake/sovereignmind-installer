@@ -8,7 +8,6 @@
 #
 # Aufruf (PowerShell):
 #   $env:SOVEREIGNMIND_GHCR_TOKEN = "<token>"
-#   $env:GITHUB_USER = "<dein-github-user>"
 #   .\install.ps1
 #
 # Parameter/Env-Variablen: siehe scripts/install.sh (identische Namen/Defaults).
@@ -43,14 +42,10 @@ $ErrorActionPreference = "Stop"
 
 $Repo = "Benexdrake/SovereignMind"
 $Token = $env:SOVEREIGNMIND_GHCR_TOKEN
-$GithubUser = $env:GITHUB_USER
+$GithubUser = if ($env:GITHUB_USER) { $env:GITHUB_USER } else { "Benexdrake" }
 
 if (-not $Token) {
     Write-Error "SOVEREIGNMIND_GHCR_TOKEN nicht gesetzt. Siehe README.md, Abschnitt 'Installation beim Kunden'."
-    exit 1
-}
-if (-not $GithubUser) {
-    Write-Error "GITHUB_USER nicht gesetzt (GitHub-Benutzername fuer docker login)."
     exit 1
 }
 

@@ -18,7 +18,7 @@
 #                             (GHCR-Images ziehen) - klassischer PAT mit Scopes
 #                             `repo` + `read:packages`, oder Fine-grained-Token
 #                             mit "Contents: Read-only" + "Packages: Read-only".
-#   GITHUB_USER               Pflicht. GitHub-Benutzername für `docker login`.
+#   GITHUB_USER               Optional. Benutzername für `docker login`, Default "Benexdrake".
 #   SOVEREIGNMIND_VERSION      Optional. Image-Tag, Default "latest".
 #   SOVEREIGNMIND_DIR          Optional. Zielverzeichnis, Default "./sovereignmind".
 #   SOVEREIGNMIND_REF          Optional. Git-Ref/Branch/Tag für die
@@ -39,10 +39,7 @@ if [ -z "${SOVEREIGNMIND_GHCR_TOKEN:-}" ]; then
   echo "Siehe README.md, Abschnitt 'Installation beim Kunden', für die Token-Erstellung." >&2
   exit 1
 fi
-if [ -z "${GITHUB_USER:-}" ]; then
-  echo "Fehler: GITHUB_USER nicht gesetzt (GitHub-Benutzername für docker login)." >&2
-  exit 1
-fi
+GITHUB_USER="${GITHUB_USER:-Benexdrake}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker nicht gefunden. Bitte zuerst installieren: https://docs.docker.com/get-docker/" >&2
