@@ -265,6 +265,20 @@ function Initialize-PostgresPassword {
     Write-Host "==> POSTGRES_PASSWORD erzeugt und in config.jsonl gespeichert."
 }
 
+function Initialize-JwtSecret {
+    # Stellt sicher, dass JWT_SECRET (Signaturschluessel der Login-Tokens) gesetzt ist. Ist es leer,
+    # wird ein zufaelliger Wert erzeugt und in config.jsonl gespeichert.
+    if ($EnvValues["JWT_SECRET"]) { return }
+    $Bytes = New-Object byte[] 48
+    $Rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $Rng.GetBytes($Bytes)
+    $Rng.Dispose()
+    $Secret = ([Convert]::ToBase64String($Bytes) -replace '[^A-Za-z0-9]', '')
+    while ($Secret.Length -lt 48) { $Secret += ([char[]]'abcdefghjkmnpqrstuvwxyz23456789' | Get-Random) }
+    Set-ConfigValue "JWT_SECRET" $Secret
+    Write-Host "==> JWT_SECRET erzeugt und in config.jsonl gespeichert."
+}
+
 function Get-LlamaCppCatalogRepo([string]$Key) {
     switch ($Key) {
         'qwen2.5-7b-instruct-q4_k_m' { return 'Qwen/Qwen2.5-7B-Instruct-GGUF' }
@@ -524,6 +538,7 @@ try {
     }
     Import-ConfigJsonl
     Initialize-PostgresPassword
+    Initialize-JwtSecret
 
     # Inferenz-Backend abfragen (s. docs/plan-llamacpp-migration/00-overview.md) - nur bei einer
     # frisch geladenen config.jsonl, damit ein erneuter Lauf (idempotent) nicht erneut fragt bzw. einen
