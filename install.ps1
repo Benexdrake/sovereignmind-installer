@@ -443,7 +443,12 @@ function Write-LlamaCppAmdWarning {
 }
 
 Write-Host "==> Login bei ghcr.io"
-$Token | docker login ghcr.io -u $GithubUser --password-stdin
+# Kein "$Token | docker login": Windows PowerShell 5.1 haengt beim Pipen "\r\n" an, GHCR lehnt den Token dann mit "denied" ab.
+cmd /c "<nul set /p =$Token| docker login ghcr.io -u $GithubUser --password-stdin"
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "docker login bei ghcr.io fehlgeschlagen. Token pruefen (Scope read:packages)."
+    exit 1
+}
 
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 Push-Location $TargetDir
