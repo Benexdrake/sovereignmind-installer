@@ -172,6 +172,7 @@ set +a
 source ./load-config.sh
 load_config
 ensure_postgres_password config
+ensure_jwt_secret config
 
 LLM_SERVER="${LLM_SERVER:-0}"
 
