@@ -9,8 +9,7 @@
 # werden muss - s. README.md, Abschnitt "Installation beim Kunden".
 #
 # Aufruf:
-#   SOVEREIGNMIND_GHCR_TOKEN=<token> GITHUB_USER=<dein-github-user> \
-#     bash install.sh
+#   SOVEREIGNMIND_GHCR_TOKEN=<token> bash install.sh
 #
 # Env-Variablen:
 #   SOVEREIGNMIND_GHCR_TOKEN  Pflicht. GitHub-Token mit Zugriff auf "Contents"
