@@ -94,6 +94,81 @@ function Test-AmdRocmDevicesReachable {
     return $LASTEXITCODE -eq 0
 }
 
+function Test-NvidiaDockerReachable {
+    # Wegwerf-Container wie bei Test-AmdRocmDevicesReachable: nvidia-smi auf dem Host reicht nicht, Docker
+    # (WSL2-Backend) muss die GPU auch durchreichen koennen, sonst scheitert `docker compose up` an
+    # "could not select device driver nvidia".
+    docker run --rm --gpus all busybox true 2>$null | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
+function Add-MissingConfigKeys {
+    # Ein Update laedt config.jsonl nicht neu (Werte des Betreibers bleiben). Schluessel, die erst spaetere
+    # Releases einfuehren, werden hier ergaenzt: nur HINZUFUEGEN, nie bestehende Werte aendern.
+    param([string]$Url, [hashtable]$Headers)
+    $Temp = "config.jsonl.new"
+    try {
+        Invoke-WebRequest -Uri $Url -Headers $Headers -OutFile $Temp -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Aktuelle config.jsonl konnte nicht geladen werden - neue Schluessel nicht geprueft ($($_.Exception.Message))."
+        return
+    }
+    $Known = @{}
+    foreach ($Line in Get-Content "config.jsonl" -Encoding UTF8) {
+        if (-not $Line.Trim()) { continue }
+        try { $Entry = $Line | ConvertFrom-Json } catch { continue }
+        if ($Entry.key) { $Known[[string]$Entry.key] = $true }
+    }
+    $Added = @()
+    $NewLines = @()
+    foreach ($Line in Get-Content $Temp -Encoding UTF8) {
+        if (-not $Line.Trim()) { continue }
+        try { $Entry = $Line | ConvertFrom-Json } catch { continue }
+        if ($Entry.key -and -not $Known[[string]$Entry.key]) {
+            $Added += [string]$Entry.key
+            $NewLines += $Line
+        }
+    }
+    Remove-Item $Temp -ErrorAction SilentlyContinue
+    if ($NewLines.Count -eq 0) { return }
+    $Existing = [System.IO.File]::ReadAllText((Join-Path (Get-Location) "config.jsonl"))
+    if (-not $Existing.EndsWith("`n")) { $Existing += "`n" }
+    $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText((Join-Path (Get-Location) "config.jsonl"), $Existing + (($NewLines -join "`n") + "`n"), $Utf8NoBom)
+    Write-Host "==> $($NewLines.Count) neue Konfigurationsschluessel in config.jsonl ergaenzt (Defaults, Werte pruefen): $($Added -join ', ')"
+}
+
+function Confirm-XttsLicense {
+    # XTTS-v2 (GPU-Sprachausgabe) steht unter der Coqui Public Model License (nicht-kommerziell). Die Zustimmung
+    # darf nicht automatisch erfolgen: einmalig mit Lizenzhinweis abfragen und in config.jsonl festhalten.
+    if ($EnvValues["XTTS_LICENSE_ACCEPTED"]) { return }
+    Write-Host ""
+    Write-Host "Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (Coqui Public Model License, https://coqui.ai/cpml)."
+    Write-Host "  Die Lizenz erlaubt nur NICHT-KOMMERZIELLE Nutzung. Ohne Zustimmung nutzt die Sprachausgabe Piper (CPU)."
+    $Answer = Read-Host "Lizenz akzeptieren und XTTS-v2 aktivieren? [j/N]"
+    if ($Answer -match '^(j|ja|y|yes)$') { Set-ConfigValue "XTTS_LICENSE_ACCEPTED" "1" }
+    else { Set-ConfigValue "XTTS_LICENSE_ACCEPTED" "0" }
+}
+
+function Confirm-LicenseServerPrivacy {
+    # Online-Aktivierung (LICENSE_SERVER_URL) uebertraegt Daten an den Lizenzserver - vor dem ersten Start
+    # offenlegen und bestaetigen lassen. Ablehnen = rein offline (Lizenzdatei), Server-URL wird geleert.
+    $Url = $EnvValues["LICENSE_SERVER_URL"]
+    if (-not $Url) { return }
+    Write-Host ""
+    Write-Host "Datenschutzhinweis zur Online-Aktivierung der Lizenz:"
+    Write-Host "  Die Installation meldet sich bei $Url und uebertraegt dabei: Lizenzschluessel, eine Instanz-ID"
+    Write-Host "  (Hash aus Hostname und einem lokalen Geheimnis, kein Klartext-Hostname), die Produktversion und"
+    Write-Host "  den Zeitpunkt der Pruefung (regelmaessiger Heartbeat). Keine Dokumente, Chats oder Nutzerdaten."
+    Write-Host "  Ohne Online-Aktivierung laeuft die Installation mit einer Lizenzdatei komplett offline."
+    $Answer = Read-Host "Online-Aktivierung erlauben? [J/n]"
+    if ($Answer -match '^(n|nein)$') {
+        Set-ConfigValue "LICENSE_SERVER_URL" ""
+        Write-Host "    Online-Aktivierung deaktiviert (LICENSE_SERVER_URL geleert)."
+    }
+}
+
 function Test-IsElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -508,7 +583,8 @@ try {
         Invoke-WebRequest -Uri $ConfigUrl -Headers $Headers -OutFile "config.jsonl"
     }
     else {
-        Write-Host "==> Vorhandene config.jsonl unveraendert uebernommen."
+        Write-Host "==> Vorhandene config.jsonl uebernommen (Werte bleiben unveraendert)."
+        Add-MissingConfigKeys -Url "https://api.github.com/repos/$Repo/contents/config.jsonl?ref=$Ref" -Headers $Headers
     }
 
     $EnvIsNew = -not (Test-Path ".env")
@@ -527,6 +603,7 @@ try {
         }
     }
     Import-ConfigJsonl
+    Confirm-LicenseServerPrivacy
     Initialize-PostgresPassword
     Initialize-JwtSecret
 
@@ -552,6 +629,14 @@ try {
         "0" {
             # Ollama laeuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
             Install-NativeOllama
+
+            # GPU-Durchreichung fuer voice-worker (STT/TTS) und GPU-Erkennung im Backend (Nvidia). Ollama selbst
+            # laeuft nativ und braucht das Overlay nicht. ROCm-Overlay gibt es hier bewusst nicht (nur nativer Linux-Host).
+            if ((Test-NvidiaGpu) -and (Test-NvidiaDockerReachable)) {
+                Write-Host "GPU erkannt: Nvidia - reiche sie an voice-worker/backend durch (docker-compose.nvidia.yml)"
+                $ComposeFiles += @("-f", "docker-compose.nvidia.yml")
+                Confirm-XttsLicense
+            }
         }
         "1" {
             Write-LlamaCppAmdWarning
@@ -608,6 +693,7 @@ try {
     $FrontendPort = if ($EnvValues["FRONTEND_PORT"]) { $EnvValues["FRONTEND_PORT"] } else { "3000" }
     Write-Host ""
     Write-Host "Fertig. Chat-UI: http://localhost:$FrontendPort"
+    Write-Host "Erster Start: die Seite oeffnen - sie fuehrt auf /setup (Lizenzschluessel einfuegen, Admin-Passwort vergeben)."
     Write-Host "Erneut ausfuehren aktualisiert auf die neueste Version (idempotent, .env und config.jsonl bleiben erhalten)."
 }
 finally {

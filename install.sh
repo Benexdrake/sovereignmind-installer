@@ -91,7 +91,26 @@ if [ ! -f config.jsonl ]; then
   echo "    config.jsonl" >&2
   curl -fsSL     -H "Authorization: token ${SOVEREIGNMIND_GHCR_TOKEN}"     -H "Accept: application/vnd.github.raw"     "https://api.github.com/repos/${REPO}/contents/config.jsonl?ref=${REF}"     -o config.jsonl
 else
-  echo "==> Vorhandene config.jsonl unveraendert uebernommen." >&2
+  echo "==> Vorhandene config.jsonl uebernommen (Werte bleiben unveraendert)." >&2
+  # Neue Schlüssel späterer Releases ergänzen (nur hinzufügen, nie bestehende Werte ändern).
+  if curl -fsSL     -H "Authorization: token ${SOVEREIGNMIND_GHCR_TOKEN}"     -H "Accept: application/vnd.github.raw"     "https://api.github.com/repos/${REPO}/contents/config.jsonl?ref=${REF}"     -o config.jsonl.new; then
+    added_keys=()
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [[ "$line" =~ ^\{\"key\":\"([A-Za-z_][A-Za-z0-9_]*)\" ]]; then
+        if ! grep -q "^{\"key\":\"${BASH_REMATCH[1]}\"" config.jsonl; then
+          [ -n "$(tail -c1 config.jsonl)" ] && echo >> config.jsonl
+          printf '%s\n' "$line" >> config.jsonl
+          added_keys+=("${BASH_REMATCH[1]}")
+        fi
+      fi
+    done < config.jsonl.new
+    if [ "${#added_keys[@]}" -gt 0 ]; then
+      echo "==> ${#added_keys[@]} neue Konfigurationsschluessel in config.jsonl ergaenzt (Defaults, Werte pruefen): ${added_keys[*]}" >&2
+    fi
+  else
+    echo "WARNUNG: Aktuelle config.jsonl konnte nicht geladen werden - neue Schluessel nicht geprueft." >&2
+  fi
+  rm -f config.jsonl.new
 fi
 
 # scripts/*.sh liegen im Repo unter scripts/, werden hier aber flach abgelegt (wie die
@@ -171,6 +190,28 @@ set +a
 # shellcheck disable=SC1091
 source ./load-config.sh
 load_config
+
+# Online-Aktivierung (LICENSE_SERVER_URL) überträgt Daten an den Lizenzserver - vor dem ersten Start
+# offenlegen und bestätigen lassen. Ablehnen = rein offline (Lizenzdatei), Server-URL wird geleert.
+if [ -n "${LICENSE_SERVER_URL:-}" ]; then
+  {
+    echo ""
+    echo "Datenschutzhinweis zur Online-Aktivierung der Lizenz:"
+    echo "  Die Installation meldet sich bei ${LICENSE_SERVER_URL} und überträgt dabei: Lizenzschlüssel, eine Instanz-ID"
+    echo "  (Hash aus Hostname und einem lokalen Geheimnis, kein Klartext-Hostname), die Produktversion und"
+    echo "  den Zeitpunkt der Prüfung (regelmäßiger Heartbeat). Keine Dokumente, Chats oder Nutzerdaten."
+    echo "  Ohne Online-Aktivierung läuft die Installation mit einer Lizenzdatei komplett offline."
+  } >&2
+  read -r -p "Online-Aktivierung erlauben? [J/n] " license_answer </dev/tty || license_answer=""
+  case "$license_answer" in
+    n|N|nein|Nein)
+      config_set LICENSE_SERVER_URL ""
+      export LICENSE_SERVER_URL=""
+      echo "    Online-Aktivierung deaktiviert (LICENSE_SERVER_URL geleert)." >&2
+      ;;
+  esac
+fi
+
 ensure_postgres_password config
 ensure_jwt_secret config
 
@@ -290,6 +331,28 @@ case "$LLM_SERVER" in
 0)
   # Ollama läuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
   ensure_native_ollama
+
+  # GPU-Durchreichung für voice-worker (STT/TTS) und GPU-Erkennung im Backend (Nvidia). Ollama selbst läuft
+  # nativ und braucht das Overlay nicht. Ein ROCm-Overlay gibt es hier bewusst nicht (llama.cpp-Pfad).
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1     && docker run --rm --gpus all busybox true >/dev/null 2>&1; then
+    echo "GPU erkannt: Nvidia - reiche sie an voice-worker/backend durch (docker-compose.nvidia.yml)" >&2
+    FILES+=(-f docker-compose.nvidia.yml)
+
+    # XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell): Zustimmung nie automatisch,
+    # sondern einmalig mit Lizenzhinweis abfragen und in config.jsonl festhalten.
+    if [ -z "${XTTS_LICENSE_ACCEPTED:-}" ]; then
+      {
+        echo ""
+        echo "Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (Coqui Public Model License, https://coqui.ai/cpml)."
+        echo "  Die Lizenz erlaubt nur NICHT-KOMMERZIELLE Nutzung. Ohne Zustimmung nutzt die Sprachausgabe Piper (CPU)."
+      } >&2
+      read -r -p "Lizenz akzeptieren und XTTS-v2 aktivieren? [j/N] " xtts_answer </dev/tty || xtts_answer=""
+      case "$xtts_answer" in
+        j|J|ja|Ja|y|Y|yes) config_set XTTS_LICENSE_ACCEPTED 1 ;;
+        *) config_set XTTS_LICENSE_ACCEPTED 0 ;;
+      esac
+    fi
+  fi
   ;;
 1)
   warn_llamacpp_amd_windows
@@ -345,4 +408,5 @@ docker compose "${FILES[@]}" "${COMPOSE_ARGS[@]}" up -d
 
 echo "" >&2
 echo "Fertig. Chat-UI: http://localhost:${FRONTEND_PORT:-3000}" >&2
+echo "Erster Start: die Seite öffnen - sie führt auf /setup (Lizenzschlüssel einfügen, Admin-Passwort vergeben)." >&2
 echo "Erneut ausführen aktualisiert auf die neueste Version (idempotent, .env und config.jsonl bleiben erhalten)." >&2
