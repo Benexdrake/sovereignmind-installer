@@ -201,24 +201,9 @@ wait_ollama_reachable() {
 }
 
 ollama_model_tags() {
-  # Chat-Modell: OLLAMA_CHAT_MODEL aus config.jsonl/.env, sonst models.json-Eintrag passend zur VRAM-Menge
-  # (>=16 GB -> 14B, sonst 7B, wie im llama.cpp-Pfad). Embedding: OLLAMA_EMBEDDING_MODEL / bge-m3.
-  local chat_tag="${OLLAMA_CHAT_MODEL:-}" wanted=8 vram
-  if [ -z "$chat_tag" ]; then
-    vram="$(detect_vram_gb || true)"
-    if [ -n "$vram" ] && [ "$vram" -ge 16 ]; then wanted=16; fi
-    if command -v python3 >/dev/null 2>&1; then
-      chat_tag="$(python3 - "$wanted" <<'PY' 2>/dev/null || true
-import json, sys
-wanted = int(sys.argv[1])
-for m in json.load(open("models.json"))["models"]:
-    if m.get("approxVramGb") == wanted:
-        print(m["ollama"]["tag"])
-        break
-PY
-)"
-    fi
-  fi
+  # Chat-Modell: OLLAMA_CHAT_MODEL aus config.jsonl/.env, sonst immer Qwen 2.5 7B (unabhängig vom VRAM).
+  # Embedding: OLLAMA_EMBEDDING_MODEL / bge-m3.
+  local chat_tag="${OLLAMA_CHAT_MODEL:-}"
   echo "${chat_tag:-qwen2.5:7b-instruct-q4_K_M}"
   echo "${OLLAMA_EMBEDDING_MODEL:-bge-m3}"
 }

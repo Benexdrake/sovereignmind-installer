@@ -344,19 +344,9 @@ function Wait-OllamaReachable([int]$TimeoutSeconds = 60) {
 }
 
 function Get-OllamaModelTags {
-    # Chat-Modell: config.jsonl/.env-Override (OLLAMA_CHAT_MODEL) sonst models.json-Eintrag passend zur VRAM-Menge
-    # (>=16 GB -> 14B, sonst 7B, wie im llama.cpp-Pfad). Embedding: OLLAMA_EMBEDDING_MODEL / bge-m3.
+    # Chat-Modell: config.jsonl/.env-Override (OLLAMA_CHAT_MODEL), sonst immer Qwen 2.5 7B (unabhaengig vom VRAM).
+    # Embedding: OLLAMA_EMBEDDING_MODEL / bge-m3.
     $chatTag = $EnvValues["OLLAMA_CHAT_MODEL"]
-    if (-not $chatTag) {
-        $vramGb = Get-VramGb
-        $wanted = if ($null -ne $vramGb -and $vramGb -ge 16) { 16 } else { 8 }
-        try {
-            $models = (Get-Content "models.json" -Raw | ConvertFrom-Json).models
-            $entry = $models | Where-Object { $_.approxVramGb -eq $wanted } | Select-Object -First 1
-            if ($entry) { $chatTag = $entry.ollama.tag }
-        }
-        catch { Write-Warning "models.json konnte nicht gelesen werden: $($_.Exception.Message)" }
-    }
     if (-not $chatTag) { $chatTag = "qwen2.5:7b-instruct-q4_K_M" }
     $embedTag = if ($EnvValues["OLLAMA_EMBEDDING_MODEL"]) { $EnvValues["OLLAMA_EMBEDDING_MODEL"] } else { "bge-m3" }
     return @($chatTag, $embedTag)
