@@ -1,5 +1,7 @@
 # SovereignMind – Installer
 
+<p align="center"><img src="logo.svg" alt="SovereignMind" width="300"></p>
+
 **On-Premise KI-Assistent für den DACH-Mittelstand.** SovereignMind ist ein DSGVO-konformer
 Chat-Assistent über die eigenen Firmendokumente (RAG), der komplett lokal beim Kunden läuft.
 Dokumente und Prompts verlassen das Netzwerk nicht, es gibt keine Anbindung an OpenAI, Google
