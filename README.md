@@ -137,15 +137,19 @@ Die Datenbank liegt im Docker-Volume `postgres-data`, alles Übrige (Dokumente, 
 im Volume `backend-data`. Datenbank und Schlüsselordner gehören zusammen: ohne die Schlüssel sind
 gespeicherte Connector-Zugangsdaten unlesbar.
 
-Datenbank und Schlüssel sichern und wiederherstellen (im Installationsverzeichnis, Stack läuft):
+Datenbank, Schlüssel, Lizenz und Dokumente sichern und wiederherstellen (im Installationsverzeichnis):
 
 ```bash
-bash backup-db.sh                    # -> backups/<Zeitstempel>/ (sovereignmind.dump + keys/)
-bash restore-db.sh backups/<Ordner>  # fragt vorher nach, überschreibt die Datenbank
+bash backup-db.sh                    # -> backups/<Zeitstempel>/ (Dump, Schlüssel, Lizenz, Dokumente, Prüfsummen)
+bash restore-db.sh backups/<Ordner>  # fragt vorher nach, legt vorher einen Sicherheits-Dump an
 ```
 
-Unter Windows: `.\backup-db.ps1` bzw. `.\restore-db.ps1 backups\<Ordner>`. Den Ordner `backups/`
-geschützt aufbewahren (er enthält die Schlüssel). Dokumente sind darin nicht enthalten.
+Unter Windows: `.\backup-db.ps1` bzw. `.\restore-db.ps1 backups\<Ordner>`. Der Installer bietet ein
+tägliches Backup an (Standard 02:00; Windows: Aufgabe `SovereignMind-Backup`, Linux/macOS: cron).
+Aufbewahrung, Zweitziel und Uhrzeit stehen in der `config.jsonl` (`BACKUP_*`). Die
+`config.jsonl` (enthält das Zertifikat für die Schlüsselverschlüsselung) getrennt vom
+Backup-Ordner aufbewahren, den Ordner `backups/` geschützt. Qdrant ist nicht enthalten
+(Dokumente werden neu eingelesen).
 
 ## Sicherheitshinweis
 
