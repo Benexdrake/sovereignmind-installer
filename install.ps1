@@ -12,24 +12,12 @@
 #
 # Parameter/Env-Variablen: siehe scripts/install.sh (identische Namen/Defaults).
 #
-# GPU-Erkennung: Nvidia ueber nvidia-smi, AMD ueber Get-CimInstance Win32_VideoController (Name
-# enthaelt "AMD"/"Radeon") - s. docs/plan-llamacpp-migration/04-compose-skripte.md. Im
-# Ollama-Pfad (LLM_SERVER=0) reicht die AMD-Namenserkennung allein NICHT, um
-# docker-compose.rocm.yml anzuhaengen (das mountet /dev/kfd + /dev/dri) - anders als beim
-# Bash-Installer, der mit `[ -e /dev/kfd ]` auf nativem Linux direkt gegen das echte Geraet
-# prueft, sieht Win32_VideoController nur die Windows-Hardware, nicht ob Docker Desktop/WSL2
-# dieses Geraet dem Container ueberhaupt durchreicht (ueblicherweise NICHT, ROCm-unter-WSL2 ist
-# auf eine enge Hardware-Liste begrenzt, s. docs/pläne/voice-tab-in-ki-einstellungen-und-gpu-diagnose.md).
-# Deshalb zusaetzlich Test-AmdRocmDevicesReachable: ein Wegwerf-`docker run --device=/dev/kfd`,
-# der nur bei Erfolg das Overlay anhaengt - ohne diesen Probe wuerde `docker compose up` bei
-# fehlendem /dev/kfd mit einem Geraete-Fehler abbrechen (auf dieser Maschine per RX 9070 XT
-# verifiziert: /dev/kfd/-dri fehlen, nur /dev/dxg ist vorhanden). Im llama.cpp-Pfad
-# (LLM_SERVER=1) fuehrt erkanntes AMD stattdessen zu docker-compose.vulkan.yml (nutzt /dev/dxg,
-# kein Geraete-Risiko) statt zum CPU-Fallback.
-#
-# VRAM-Menge (fuer die Modellauswahl, s. scripts/detect-vram.sh/install.sh): nur ueber nvidia-smi
-# ermittelbar (AMD-VRAM-Abfrage unter Windows ohne rocm-smi nicht moeglich). Ohne erkannte
-# Nvidia-GPU gilt derselbe konservative Fallback wie im Bash-Installer - das 8GB-Modell.
+# GPU-Erkennung: Nvidia ueber nvidia-smi plus Test-NvidiaDockerReachable (ein Wegwerf-`docker run
+# --gpus all`) - nur dann wird docker-compose.nvidia.yml angehaengt, sonst wuerde `docker compose up`
+# an "could not select device driver nvidia" scheitern. AMD-GPUs werden nicht an Container
+# durchgereicht (ROCm unter Docker Desktop/WSL2 ist auf eine enge Hardware-Liste begrenzt, s.
+# docs/pläne/voice-tab-in-ki-einstellungen-und-gpu-diagnose.md); Ollama laeuft ohnehin nativ und
+# erkennt die GPU selbst.
 
 [CmdletBinding()]
 param(
@@ -59,43 +47,13 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-function Get-VramGb {
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-        $raw = (nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null | Select-Object -First 1)
-        if ($raw -match '^\s*(\d+)\s*$') {
-            return [int][math]::Round([double]$Matches[1] / 1024)
-        }
-    }
-    # AMD-VRAM-Menge ist unter Windows ohne rocm-smi nicht ermittelbar, s. Skript-Kopfkommentar -
-    # dort greift der konservative 8GB-Fallback wie beim Bash-Installer.
-    return $null
-}
-
 function Test-NvidiaGpu {
     return [bool](Get-Command nvidia-smi -ErrorAction SilentlyContinue) -and
         ((nvidia-smi -L 2>$null | Select-Object -First 1))
 }
 
-function Test-AmdGpu {
-    $controllers = Get-CimInstance -ClassName Win32_VideoController -ErrorAction SilentlyContinue
-    foreach ($controller in $controllers) {
-        if ($controller.Name -match 'AMD|Radeon') {
-            return $true
-        }
-    }
-    return $false
-}
-
-function Test-AmdRocmDevicesReachable {
-    # Wegwerf-Container statt reiner Namenspruefung, s. Skript-Kopfkommentar: /dev/kfd/-dri
-    # existieren unter Docker Desktop/WSL2 ueblicherweise nicht, auch wenn Windows eine
-    # AMD-GPU meldet. docker run schlaegt dann mit einem Geraete-Fehler fehl (LASTEXITCODE <> 0).
-    docker run --rm --device=/dev/kfd --device=/dev/dri busybox true 2>$null | Out-Null
-    return $LASTEXITCODE -eq 0
-}
-
 function Test-NvidiaDockerReachable {
-    # Wegwerf-Container wie bei Test-AmdRocmDevicesReachable: nvidia-smi auf dem Host reicht nicht, Docker
+    # Wegwerf-Container statt reiner nvidia-smi-Pruefung: nvidia-smi auf dem Host reicht nicht, Docker
     # (WSL2-Backend) muss die GPU auch durchreichen koennen, sonst scheitert `docker compose up` an
     # "could not select device driver nvidia".
     docker run --rm --gpus all busybox true 2>$null | Out-Null
@@ -354,20 +312,6 @@ function Initialize-JwtSecret {
     Write-Host "==> JWT_SECRET erzeugt und in config.jsonl gespeichert."
 }
 
-function Get-LlamaCppCatalogRepo([string]$Key) {
-    switch ($Key) {
-        'qwen2.5-7b-instruct-q4_k_m' { return 'Qwen/Qwen2.5-7B-Instruct-GGUF' }
-        default { return 'Qwen/Qwen2.5-14B-Instruct-GGUF' }
-    }
-}
-
-function Get-LlamaCppCatalogFile([string]$Key) {
-    switch ($Key) {
-        'qwen2.5-7b-instruct-q4_k_m' { return 'qwen2.5-7b-instruct-q4_k_m.gguf' }
-        default { return 'qwen2.5-14b-instruct-q4_k_m.gguf' }
-    }
-}
-
 function Test-OllamaReachable {
     try {
         Invoke-WebRequest -Uri "http://localhost:11434/api/tags" -UseBasicParsing -TimeoutSec 3 | Out-Null
@@ -515,12 +459,6 @@ function Install-NativeOllama {
     }
 }
 
-function Write-LlamaCppAmdWarning {
-    if (Test-AmdGpu -and -not (Test-NvidiaGpu)) {
-        Write-Warning "llama.cpp (LLM_SERVER=1) mit GPU-Beschleunigung wird unter Windows + AMD nicht unterstuetzt (Docker-Desktop-WSL2-D3D12, s. docs/offen.md) - es liefe im CPU-Modus. Empfehlung: LLM_SERVER=0 (Ollama) in config.jsonl setzen."
-    }
-}
-
 Write-Host "==> Login bei ghcr.io"
 # Kein "$Token | docker login": Windows PowerShell 5.1 haengt beim Pipen "\r\n" an, GHCR lehnt den Token dann mit "denied" ab.
 cmd /c "<nul set /p =$Token| docker login ghcr.io -u $GithubUser --password-stdin"
@@ -538,9 +476,6 @@ try {
         "docker-compose.images.yml",
         "docker-compose.nvidia.yml",
         "docker-compose.rocm.yml",
-        "docker-compose.cuda.yml",
-        "docker-compose.vulkan.yml",
-        "docker-compose.local-llamacpp.yml",
         ".env.example"
     )
     $Headers = @{
@@ -607,91 +542,38 @@ try {
     Initialize-PostgresPassword
     Initialize-JwtSecret
 
-    # Inferenz-Backend abfragen (s. docs/plan-llamacpp-migration/00-overview.md) - nur bei einer
-    # frisch geladenen config.jsonl, damit ein erneuter Lauf (idempotent) nicht erneut fragt bzw. einen
-    # bewusst gesetzten LLM_SERVER-Wert nicht ueberschreibt.
-    if ($ConfigIsNew -and -not (Select-String -Path ".env" -Pattern '^\s*LLM_SERVER\s*=' -Quiet)) {
-        Write-Host ""
-        Write-Host "Welches Inferenz-Backend soll laufen?"
-        Write-Host "  0 = Ollama (Standard, unveraendertes Verhalten)"
-        Write-Host "  1 = llama.cpp (neu, s. docs/plan-llamacpp-migration)"
-        $Choice = Read-Host "LLM_SERVER [0]"
-        if ($Choice -ne "1") { $Choice = "0" }
-        Set-ConfigValue "LLM_SERVER" $Choice
+    # Alte Installationen koennen noch LLM_SERVER=1 (llama.cpp) in config.jsonl/.env haben - der Pfad
+    # ist entfernt, Ollama ist das einzige Backend. Nur ein Hinweis, kein Abbruch.
+    $LegacyLlmServer = if ($EnvValues["LLM_SERVER"]) { $EnvValues["LLM_SERVER"] } elseif ($env:LLM_SERVER) { $env:LLM_SERVER } else { "0" }
+    if ($LegacyLlmServer -ne "0") {
+        Write-Warning "LLM_SERVER=$LegacyLlmServer wird ignoriert - llama.cpp wird nicht mehr unterstuetzt, es wird Ollama verwendet. Die Eintraege LLM_SERVER und LLM_CHAT_*/LLM_EMBED_* koennen Sie aus config.jsonl entfernen."
     }
-    $LlmServer = if ($EnvValues["LLM_SERVER"]) { $EnvValues["LLM_SERVER"] } else { "0" }
 
     $ComposeFiles = @("-f", "docker-compose.yml", "-f", "docker-compose.images.yml")
-    $ComposeArgs = @()
-    $LocalLlamaCpp = $false
 
-    switch ($LlmServer) {
-        "0" {
-            # Ollama laeuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
-            Install-NativeOllama
+    # Ollama laeuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
+    Install-NativeOllama
 
-            # GPU-Durchreichung fuer voice-worker (STT/TTS) und GPU-Erkennung im Backend (Nvidia). Ollama selbst
-            # laeuft nativ und braucht das Overlay nicht. ROCm-Overlay gibt es hier bewusst nicht (nur nativer Linux-Host).
-            if ((Test-NvidiaGpu) -and (Test-NvidiaDockerReachable)) {
-                Write-Host "GPU erkannt: Nvidia - reiche sie an voice-worker/backend durch (docker-compose.nvidia.yml)"
-                $ComposeFiles += @("-f", "docker-compose.nvidia.yml")
-                Confirm-XttsLicense
-            }
-        }
-        "1" {
-            Write-LlamaCppAmdWarning
-            $LocalLlamaCpp = $true
-            $ComposeArgs += @("--profile", "local-llamacpp")
-            $ComposeFiles += @("-f", "docker-compose.local-llamacpp.yml")
-
-            if (Test-NvidiaGpu) {
-                Write-Host "GPU erkannt: Nvidia (nvidia-smi vorhanden) - nutze docker-compose.cuda.yml"
-                $ComposeFiles += @("-f", "docker-compose.cuda.yml")
-            }
-            elseif (Test-AmdGpu) {
-                Write-Host "GPU erkannt: AMD (Win32_VideoController) - nutze docker-compose.vulkan.yml (bekannte Einschraenkung: erreicht die GPU aktuell noch nicht, s. docs/plan-llamacpp-migration/01-spike-verifikation.md)"
-                $ComposeFiles += @("-f", "docker-compose.vulkan.yml")
-            }
-            else {
-                Write-Host "Keine unterstuetzte GPU erkannt - llama.cpp laeuft im CPU-Modus"
-            }
-        }
-        default {
-            Write-Error "Nicht unterstuetzter Wert fuer LLM_SERVER: '$LlmServer'. Unterstuetzt werden aktuell 0 (Ollama) und 1 (llama.cpp)."
-            exit 1
-        }
+    # GPU-Durchreichung fuer voice-worker (STT/TTS) und GPU-Erkennung im Backend (Nvidia). Ollama selbst
+    # laeuft nativ und braucht das Overlay nicht. ROCm-Overlay gibt es hier bewusst nicht (nur nativer Linux-Host).
+    if ((Test-NvidiaGpu) -and (Test-NvidiaDockerReachable)) {
+        Write-Host "GPU erkannt: Nvidia - reiche sie an voice-worker/backend durch (docker-compose.nvidia.yml)"
+        $ComposeFiles += @("-f", "docker-compose.nvidia.yml")
+        Confirm-XttsLicense
     }
 
     $env:SOVEREIGNMIND_VERSION = $Version
-    $env:LLM_SERVER = $LlmServer
 
     Write-Host "==> Ziehe Images (Version: $Version)"
-    docker compose @ComposeFiles @ComposeArgs pull
-
-    if ($LocalLlamaCpp) {
-        # Kein separater Pull-Container noetig - llm-chat/llm-embed laden ihr Modell selbst beim
-        # ersten Start (s. scripts/install.sh/compose-up.sh).
-        $VramGb = Get-VramGb
-        $Model16Gb = if ($EnvValues["LLM_CHAT_MODEL_16GB"]) { $EnvValues["LLM_CHAT_MODEL_16GB"] } else { "qwen2.5-14b-instruct-q4_k_m" }
-        $Model8Gb = if ($EnvValues["LLM_CHAT_MODEL_8GB"]) { $EnvValues["LLM_CHAT_MODEL_8GB"] } else { "qwen2.5-7b-instruct-q4_k_m" }
-        $ChatModelKey = if ($VramGb -ge 16) { $Model16Gb } else { $Model8Gb }
-
-        $env:LLM_CHAT_MODEL_KEY = $ChatModelKey
-        $env:LLM_CHAT_HF_REPO = if ($EnvValues["LLM_CHAT_HF_REPO"]) { $EnvValues["LLM_CHAT_HF_REPO"] } else { Get-LlamaCppCatalogRepo $ChatModelKey }
-        $env:LLM_CHAT_HF_FILE = if ($EnvValues["LLM_CHAT_HF_FILE"]) { $EnvValues["LLM_CHAT_HF_FILE"] } else { Get-LlamaCppCatalogFile $ChatModelKey }
-
-        $VramGbLabel = if ($null -ne $VramGb) { $VramGb } else { "unbekannt" }
-        Write-Host "Zu ladendes Chat-Modell: $ChatModelKey (erkannte VRAM-Menge: $VramGbLabel GB)"
-        Write-Host "Hinweis: llm-chat/llm-embed laden ihr Modell beim ersten Start automatisch von Hugging Face (kann mehrere Minuten dauern) - Fortschritt mit 'docker compose logs -f llm-chat' verfolgen."
-    }
+    docker compose @ComposeFiles pull
 
     Write-Host "==> Starte Stack"
-    docker compose @ComposeFiles @ComposeArgs up -d
+    docker compose @ComposeFiles up -d
 
     # Modelle der Worker liegen in Volumes, nicht im Image (analog zu ollama pull). Fehlschlag = nur
     # Warnung, die Worker laden bei Bedarf nach.
     foreach ($Worker in @("ingestion-worker", "voice-worker")) {
-        Write-Host "==> Lade Modelle: $Worker (beim ersten Mal mehrere Minuten)"
+        Write-Host "==> Lade Modelle: $Worker (ca. 1,5 GB ingestion-worker, ca. 3,2 GB voice-worker; beim ersten Mal mehrere Minuten)"
         docker exec "sovereignmind-$Worker" python -m app.prefetch
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "Modell-Download fuer $Worker fehlgeschlagen - spaeter manuell nachholen: docker exec sovereignmind-$Worker python -m app.prefetch"

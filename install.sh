@@ -57,8 +57,7 @@ cd "$TARGET_DIR"
 
 echo "==> Lade Compose-Dateien von GitHub (Ref: $REF)" >&2
 for f in docker-compose.yml docker-compose.images.yml docker-compose.nvidia.yml \
-  docker-compose.rocm.yml docker-compose.cuda.yml docker-compose.vulkan.yml \
-  docker-compose.local-llamacpp.yml .env.example; do
+  docker-compose.rocm.yml .env.example; do
   echo "    $f" >&2
   curl -fsSL \
     -H "Authorization: token ${SOVEREIGNMIND_GHCR_TOKEN}" \
@@ -115,7 +114,7 @@ fi
 
 # scripts/*.sh liegen im Repo unter scripts/, werden hier aber flach abgelegt (wie die
 # Compose-Dateien) - der Installer geht nicht von einem vollständigen Repo-Checkout aus.
-for f in detect-vram.sh ensure-docker.sh llamacpp-catalog.sh load-config.sh backup-db.sh restore-db.sh; do
+for f in ensure-docker.sh load-config.sh backup-db.sh restore-db.sh; do
   echo "    $f" >&2
   curl -fsSL \
     -H "Authorization: token ${SOVEREIGNMIND_GHCR_TOKEN}" \
@@ -125,55 +124,8 @@ for f in detect-vram.sh ensure-docker.sh llamacpp-catalog.sh load-config.sh back
 done
 
 # shellcheck disable=SC1091
-source detect-vram.sh
-# shellcheck disable=SC1091
 source ensure-docker.sh
-# shellcheck disable=SC1091
-source llamacpp-catalog.sh
 ensure_docker_running
-
-vram_label() {
-  if [ "$(uname -s)" = "Darwin" ]; then
-    echo "erkannter Unified-Memory-Speicher"
-  else
-    echo "erkannte VRAM-Menge"
-  fi
-}
-
-# AMD-Geräte-Checks: Auf nativem Linux liegt /dev/kfd (ROCm) bzw. /dev/dxg (WSL2-Vulkan) direkt
-# im Host-Dateisystem, ein einfacher [ -e ]-Test reicht. Unter Windows/Git-Bash (uname -s
-# MINGW*/MSYS*) läuft der Docker-Daemon dagegen in einer eigenen WSL2-VM, die von der
-# Windows-Bash aus nicht einsehbar ist - ein [ -e /dev/kfd ]-Test dort schlägt IMMER fehl, ganz
-# unabhängig von der tatsächlichen Hardware/Docker-Konfiguration (s. scripts/compose-up.sh sowie
-# docs/pläne/voice-tab-in-ki-einstellungen-und-gpu-diagnose.md, dort auf einer RX 9070 XT
-# verifiziert). Deshalb dort stattdessen ein Wegwerf-Containerstart als echter
-# Erreichbarkeits-Test (analog install.ps1/Test-AmdRocmDevicesReachable) - docker run schlägt
-# bei fehlendem Gerät mit Exit-Code <> 0 fehl, statt den Compose-Start später mit einem
-# Geräte-Fehler abzubrechen.
-is_windows_bash() {
-  [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]
-}
-
-has_amd_rocm_device() {
-  if is_windows_bash; then
-    # MSYS_NO_PATHCONV=1: Git Bash wandelt "/dev/kfd" sonst wie einen Unix-Pfad in einen
-    # Windows-Pfad um, bevor er als --device-Argument bei Docker ankommt ("...adding custom
-    # device \"C\": no such file or directory") - der Erreichbarkeits-Test würde dadurch IMMER
-    # fehlschlagen, unabhängig von der tatsächlichen Docker-/Hardware-Konfiguration.
-    MSYS_NO_PATHCONV=1 docker run --rm --device=/dev/kfd --device=/dev/dri busybox true >/dev/null 2>&1
-  else
-    [ -e /dev/kfd ]
-  fi
-}
-
-has_amd_dxg_device() {
-  if is_windows_bash; then
-    # s. Kommentar in has_amd_rocm_device - derselbe Git-Bash-Pfadumwandlungs-Bug.
-    MSYS_NO_PATHCONV=1 docker run --rm --device=/dev/dxg busybox true >/dev/null 2>&1
-  else
-    [ -e /dev/dxg ]
-  fi
-}
 
 if [ ! -f .env ]; then
   cp .env.example .env
@@ -215,7 +167,11 @@ fi
 ensure_postgres_password config
 ensure_jwt_secret config
 
-LLM_SERVER="${LLM_SERVER:-0}"
+# Alte Installationen können noch LLM_SERVER=1 (llama.cpp) in config.jsonl/.env haben - der Pfad
+# ist entfernt, Ollama ist das einzige Backend. Nur ein Hinweis, kein Abbruch.
+if [ -n "${LLM_SERVER:-}" ] && [ "${LLM_SERVER}" != "0" ]; then
+  echo "HINWEIS: LLM_SERVER=$LLM_SERVER wird ignoriert - llama.cpp wird nicht mehr unterstützt, es wird Ollama verwendet. Die Einträge LLM_SERVER und LLM_CHAT_*/LLM_EMBED_* können Sie aus config.jsonl entfernen." >&2
+fi
 
 ollama_reachable() {
   curl -fsS --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1
@@ -314,103 +270,46 @@ ensure_native_ollama() {
   done < <(ollama_model_tags)
 }
 
-warn_llamacpp_amd_windows() {
-  # Nur Windows/Git-Bash: dort läuft Docker in WSL2, AMD-GPU-Passthrough für llama.cpp fehlt.
-  if is_windows_bash && ! { command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; } &&
-    command -v powershell.exe >/dev/null 2>&1 &&
-    powershell.exe -NoProfile -Command "Get-CimInstance Win32_VideoController | ForEach-Object Name" 2>/dev/null | grep -Eiq 'AMD|Radeon'; then
-    echo "WARNUNG: llama.cpp (LLM_SERVER=1) mit GPU-Beschleunigung wird unter Windows + AMD nicht unterstützt (Docker-Desktop-WSL2-D3D12, s. docs/offen.md) - es läuft im CPU-Modus. Empfehlung: LLM_SERVER=0 (Ollama) in config.jsonl setzen." >&2
-  fi
-}
-
 FILES=(-f docker-compose.yml -f docker-compose.images.yml)
-COMPOSE_ARGS=()
-LOCAL_LLAMACPP=0
 
-case "$LLM_SERVER" in
-0)
-  # Ollama läuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
-  ensure_native_ollama
+# Ollama läuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
+ensure_native_ollama
 
-  # GPU-Durchreichung für voice-worker (STT/TTS) und GPU-Erkennung im Backend (Nvidia). Ollama selbst läuft
-  # nativ und braucht das Overlay nicht. Ein ROCm-Overlay gibt es hier bewusst nicht (llama.cpp-Pfad).
-  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1     && docker run --rm --gpus all busybox true >/dev/null 2>&1; then
-    echo "GPU erkannt: Nvidia - reiche sie an voice-worker/backend durch (docker-compose.nvidia.yml)" >&2
-    FILES+=(-f docker-compose.nvidia.yml)
+# GPU-Durchreichung für voice-worker (STT/TTS) und GPU-Erkennung im Backend (Nvidia). Ollama selbst läuft
+# nativ und braucht das Overlay nicht. Ein ROCm-Overlay gibt es hier bewusst nicht.
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1     && docker run --rm --gpus all busybox true >/dev/null 2>&1; then
+  echo "GPU erkannt: Nvidia - reiche sie an voice-worker/backend durch (docker-compose.nvidia.yml)" >&2
+  FILES+=(-f docker-compose.nvidia.yml)
 
-    # XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell): Zustimmung nie automatisch,
-    # sondern einmalig mit Lizenzhinweis abfragen und in config.jsonl festhalten.
-    if [ -z "${XTTS_LICENSE_ACCEPTED:-}" ]; then
-      {
-        echo ""
-        echo "Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (Coqui Public Model License, https://coqui.ai/cpml)."
-        echo "  Die Lizenz erlaubt nur NICHT-KOMMERZIELLE Nutzung. Ohne Zustimmung nutzt die Sprachausgabe Piper (CPU)."
-      } >&2
-      read -r -p "Lizenz akzeptieren und XTTS-v2 aktivieren? [j/N] " xtts_answer </dev/tty || xtts_answer=""
-      case "$xtts_answer" in
-        j|J|ja|Ja|y|Y|yes) config_set XTTS_LICENSE_ACCEPTED 1 ;;
-        *) config_set XTTS_LICENSE_ACCEPTED 0 ;;
-      esac
-    fi
+  # XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell): Zustimmung nie automatisch,
+  # sondern einmalig mit Lizenzhinweis abfragen und in config.jsonl festhalten.
+  if [ -z "${XTTS_LICENSE_ACCEPTED:-}" ]; then
+    {
+      echo ""
+      echo "Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (Coqui Public Model License, https://coqui.ai/cpml)."
+      echo "  Die Lizenz erlaubt nur NICHT-KOMMERZIELLE Nutzung. Ohne Zustimmung nutzt die Sprachausgabe Piper (CPU)."
+    } >&2
+    read -r -p "Lizenz akzeptieren und XTTS-v2 aktivieren? [j/N] " xtts_answer </dev/tty || xtts_answer=""
+    case "$xtts_answer" in
+      j|J|ja|Ja|y|Y|yes) config_set XTTS_LICENSE_ACCEPTED 1 ;;
+      *) config_set XTTS_LICENSE_ACCEPTED 0 ;;
+    esac
   fi
-  ;;
-1)
-  warn_llamacpp_amd_windows
-  LOCAL_LLAMACPP=1
-  COMPOSE_ARGS+=(--profile local-llamacpp)
-  FILES+=(-f docker-compose.local-llamacpp.yml)
-
-  # Erkennungsreihenfolge wie scripts/compose-up.sh (s. dort für Details/Risiken).
-  if [ "$(uname -s)" = "Darwin" ]; then
-    echo "macOS erkannt – Docker Desktop hat keinen Zugriff auf die Apple-GPU (kein Metal-Passthrough in Containern möglich). Läuft im CPU-Modus; dank Unified Memory ist das kein Fehlzustand." >&2
-  elif command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
-    echo "GPU erkannt: Nvidia (nvidia-smi vorhanden) – nutze docker-compose.cuda.yml" >&2
-    FILES+=(-f docker-compose.cuda.yml)
-  elif has_amd_rocm_device; then
-    echo "GPU erkannt: AMD/ROCm (/dev/kfd erreichbar) – nutze docker-compose.rocm.yml" >&2
-    FILES+=(-f docker-compose.rocm.yml)
-  elif is_windows_bash && has_amd_dxg_device; then
-    echo "GPU erkannt: AMD via Vulkan/dxg (Windows/WSL2) – nutze docker-compose.vulkan.yml (bekannte Einschränkung: erreicht die GPU noch nicht, s. docs/plan-llamacpp-migration/01-spike-verifikation.md)" >&2
-    FILES+=(-f docker-compose.vulkan.yml)
-  else
-    echo "Keine unterstützte GPU erkannt – llama.cpp läuft im CPU-Modus" >&2
-  fi
-  ;;
-*)
-  echo "Fehler: Nicht unterstützter Wert für LLM_SERVER: '$LLM_SERVER'. Unterstützt werden aktuell 0 (Ollama) und 1 (llama.cpp)." >&2
-  exit 1
-  ;;
-esac
+fi
 
 export SOVEREIGNMIND_VERSION="$VERSION"
 
 echo "==> Ziehe Images (Version: $VERSION)" >&2
-docker compose "${FILES[@]}" "${COMPOSE_ARGS[@]}" pull
-
-if [ "$LOCAL_LLAMACPP" = "1" ]; then
-  # Kein separater Pull-Container nötig (s. scripts/compose-up.sh) - llm-chat/llm-embed laden ihr
-  # Modell selbst beim ersten Start.
-  vram_gb="$(detect_vram_gb)"
-  if [ -n "$vram_gb" ] && [ "$vram_gb" -ge 16 ]; then
-    LLM_CHAT_MODEL_KEY="${LLM_CHAT_MODEL_16GB:-qwen2.5-14b-instruct-q4_k_m}"
-  else
-    LLM_CHAT_MODEL_KEY="${LLM_CHAT_MODEL_8GB:-qwen2.5-7b-instruct-q4_k_m}"
-  fi
-  export LLM_CHAT_MODEL_KEY
-  export LLM_CHAT_HF_REPO="${LLM_CHAT_HF_REPO:-$(llamacpp_catalog_repo "$LLM_CHAT_MODEL_KEY")}"
-  export LLM_CHAT_HF_FILE="${LLM_CHAT_HF_FILE:-$(llamacpp_catalog_file "$LLM_CHAT_MODEL_KEY")}"
-  echo "Zu ladendes Chat-Modell: $LLM_CHAT_MODEL_KEY ($(vram_label): ${vram_gb:-unbekannt} GB)" >&2
-  echo "Hinweis: llm-chat/llm-embed laden ihr Modell beim ersten Start automatisch von Hugging Face (kann mehrere Minuten dauern) - Fortschritt mit 'docker compose logs -f llm-chat' verfolgen." >&2
-fi
+docker compose "${FILES[@]}" pull
 
 echo "==> Starte Stack" >&2
-docker compose "${FILES[@]}" "${COMPOSE_ARGS[@]}" up -d
+docker compose "${FILES[@]}" up -d
 
 # Modelle der Worker (Docling, Whisper, Piper, ggf. XTTS) liegen nicht im Image, sondern in Volumes
 # und werden hier nach dem Start geladen (analog zu `ollama pull`). Ein Fehlschlag ist nur eine
 # Warnung, die Worker starten trotzdem und laden bei Bedarf nach.
 for worker in ingestion-worker voice-worker; do
-  echo "==> Lade Modelle: $worker (beim ersten Mal mehrere Minuten)" >&2
+  echo "==> Lade Modelle: $worker (ca. 1,5 GB ingestion-worker, ca. 3,2 GB voice-worker; beim ersten Mal mehrere Minuten)" >&2
   docker exec "sovereignmind-$worker" python -m app.prefetch ||
     echo "WARNUNG: Modell-Download für $worker fehlgeschlagen - später manuell nachholen: docker exec sovereignmind-$worker python -m app.prefetch" >&2
 done

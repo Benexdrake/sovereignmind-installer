@@ -22,7 +22,7 @@ ist die selbst gehostete Alternative.
 ## Funktionen
 
 - **Lokale KI:** Sprachmodell und Embeddings laufen auf der Hardware des Kunden (Ollama nativ
-  auf dem Rechner oder llama.cpp in Containern). Das Chat-Modell wird automatisch nach
+  auf dem Rechner). Das Chat-Modell wird automatisch nach
   verfügbarem VRAM gewählt (NVIDIA, AMD, sonst CPU) und kann der Admin im Bereich
   „KI-Einstellungen“ wechseln.
 - **Chat mit Quellenbelegen:** Fragen in natürlicher Sprache, Antworten mit klickbaren
@@ -45,7 +45,7 @@ ist die selbst gehostete Alternative.
 
 ```
 Web-Oberfläche ──> Backend (Auth, Rollen, Lizenz, Mandanten)
-                      ├─ Inferenz (Ollama oder llama.cpp)
+                      ├─ Inferenz (Ollama)
                       ├─ Vektordatenbank (Qdrant)
                       ├─ Dokumentenverarbeitung (Docling)
                       ├─ Sprache (optional)
@@ -59,7 +59,8 @@ in einer privaten Registry (GitHub Container Registry) und werden mit einem Zuga
 ## Voraussetzungen
 
 - Docker mit Compose-Plugin (Docker Desktop unter Windows und macOS)
-- Internetzugang für Installation und den ersten Modell-Download (unter Windows lädt der
+- Internetzugang für Installation und den ersten Modell-Download (ca. 5 GB Worker-Modelle,
+  zusätzlich zu den Ollama-Modellen; unter Windows lädt der
   Installer zusätzlich Ollama, ca. 1,5 GB, sofern es fehlt)
 - Für gute Antwortzeiten eine GPU mit ausreichend VRAM. Ohne GPU läuft alles auf der CPU,
   deutlich langsamer. Unter Windows mit AMD-GPU kommt die GPU nur bei nativ installiertem
@@ -115,7 +116,7 @@ und startet den Stack. Erneutes Ausführen aktualisiert auf die neueste Version.
 | `SOVEREIGNMIND_DIR` | Installationsverzeichnis | `./sovereignmind` |
 | `SOVEREIGNMIND_REF` | Version (Tag oder Branch) | `main` |
 
-Weitere Einstellungen (Ports, Impressum, Inferenz-Backend `LLM_SERVER`, Logging) stehen mit
+Weitere Einstellungen (Ports, Impressum, Ollama, Logging) stehen mit
 Erklärung in der `config.jsonl` im Installationsverzeichnis. Geheimnisse gehören in die `.env`.
 
 ## Stoppen und Updates
