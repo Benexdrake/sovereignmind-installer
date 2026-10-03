@@ -406,6 +406,15 @@ fi
 echo "==> Starte Stack" >&2
 docker compose "${FILES[@]}" "${COMPOSE_ARGS[@]}" up -d
 
+# Modelle der Worker (Docling, Whisper, Piper, ggf. XTTS) liegen nicht im Image, sondern in Volumes
+# und werden hier nach dem Start geladen (analog zu `ollama pull`). Ein Fehlschlag ist nur eine
+# Warnung, die Worker starten trotzdem und laden bei Bedarf nach.
+for worker in ingestion-worker voice-worker; do
+  echo "==> Lade Modelle: $worker (beim ersten Mal mehrere Minuten)" >&2
+  docker exec "sovereignmind-$worker" python -m app.prefetch ||
+    echo "WARNUNG: Modell-Download für $worker fehlgeschlagen - später manuell nachholen: docker exec sovereignmind-$worker python -m app.prefetch" >&2
+done
+
 echo "" >&2
 echo "Fertig. Chat-UI: http://localhost:${FRONTEND_PORT:-3000}" >&2
 echo "Erster Start: die Seite öffnen - sie führt auf /setup (Lizenzschlüssel einfügen, Admin-Passwort vergeben)." >&2

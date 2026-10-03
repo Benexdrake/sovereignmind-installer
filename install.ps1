@@ -688,6 +688,16 @@ try {
     Write-Host "==> Starte Stack"
     docker compose @ComposeFiles @ComposeArgs up -d
 
+    # Modelle der Worker liegen in Volumes, nicht im Image (analog zu ollama pull). Fehlschlag = nur
+    # Warnung, die Worker laden bei Bedarf nach.
+    foreach ($Worker in @("ingestion-worker", "voice-worker")) {
+        Write-Host "==> Lade Modelle: $Worker (beim ersten Mal mehrere Minuten)"
+        docker exec "sovereignmind-$Worker" python -m app.prefetch
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Modell-Download fuer $Worker fehlgeschlagen - spaeter manuell nachholen: docker exec sovereignmind-$Worker python -m app.prefetch"
+        }
+    }
+
     Install-HardwareAgent
 
     $FrontendPort = if ($EnvValues["FRONTEND_PORT"]) { $EnvValues["FRONTEND_PORT"] } else { "3000" }
