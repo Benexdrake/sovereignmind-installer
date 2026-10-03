@@ -131,6 +131,38 @@ Das nativ installierte Ollama und seine Modelle sind davon nicht betroffen.
 
 Update: Installer erneut ausführen.
 
+## Installation ohne GitHub-Token (Portal-Modus)
+
+Betreibt der Anbieter einen Lizenzserver, genügen dessen Adresse und der Lizenzschlüssel (`SM-…`); ein GitHub-Token wird nicht gebraucht.
+Dateien und Images kommen vom Lizenzserver, die Online-Aktivierung der Lizenz ist gleich mit eingerichtet (Schlüssel und Adresse stehen in `.env`).
+
+```bash
+SOVEREIGNMIND_PORTAL_URL=https://portal.example.com SOVEREIGNMIND_LICENSE_KEY=SM-XXXXX-... bash install.sh
+```
+
+```powershell
+$env:SOVEREIGNMIND_PORTAL_URL = "https://portal.example.com"
+$env:SOVEREIGNMIND_LICENSE_KEY = "SM-XXXXX-..."
+.\install.ps1
+```
+
+`docker login` verlangt für den Lizenzserver HTTPS (außer bei `localhost`). Der Hardware-Agent (Windows) wird in diesem Modus nicht
+mitinstalliert, er kommt aus GitHub-Releases. Ohne `SOVEREIGNMIND_PORTAL_URL` läuft der Installer unverändert mit dem GitHub-Token.
+
+## Für den Betreiber: Lizenzserver aufbauen
+
+`install-license-server.sh` bzw. `install-license-server.ps1` richten den Betreiber-Stack ein (Lizenzserver, Postgres, optional Caddy mit TLS).
+Nie beim Kunden ausführen.
+
+```bash
+SOVEREIGNMIND_GHCR_TOKEN=<token> bash install-license-server.sh                                    # nur 127.0.0.1:5100
+SOVEREIGNMIND_GHCR_TOKEN=<token> PORTAL_DOMAIN=portal.example.com bash install-license-server.sh  # mit TLS (Ports 80/443)
+```
+
+Beim ersten Lauf erzeugt der Server seine Geheimnisse (Signaturschlüssel, Admin-Schlüssel) und zeigt den Admin-Schlüssel **einmalig** an;
+der öffentliche Schlüssel steht in `secrets/license_public.pem`. Der GHCR-Token liegt nur in `.env` (Rechte 600). Sichern mit
+`backup-license-server.sh` (Datenbank, `secrets/`, Katalog); `secrets/` unbedingt getrennt aufbewahren.
+
 ## Datensicherung
 
 Die Datenbank liegt im Docker-Volume `postgres-data`, alles Übrige (Dokumente, Schlüssel, Lizenz)

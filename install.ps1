@@ -23,16 +23,50 @@
 param(
     [string]$Version = $(if ($env:SOVEREIGNMIND_VERSION) { $env:SOVEREIGNMIND_VERSION } else { "latest" }),
     [string]$TargetDir = $(if ($env:SOVEREIGNMIND_DIR) { $env:SOVEREIGNMIND_DIR } else { ".\sovereignmind" }),
-    [string]$Ref = $(if ($env:SOVEREIGNMIND_REF) { $env:SOVEREIGNMIND_REF } else { "main" })
+    [string]$Ref = $(if ($env:SOVEREIGNMIND_REF) { $env:SOVEREIGNMIND_REF } else { "main" }),
+    # Entfernt nur die geplante Backup-Aufgabe (Deinstallation) und beendet das Skript.
+    [switch]$RemoveBackupTask
 )
 
 $ErrorActionPreference = "Stop"
+
+# Der Name der Aufgabe in der Windows-Aufgabenplanung (docs/pläne/postgres-haertung-und-backup/phase-2-...).
+$BackupTaskName = "SovereignMind-Backup"
+
+if ($RemoveBackupTask) {
+    if (Get-ScheduledTask -TaskName $BackupTaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $BackupTaskName -Confirm:$false
+        Write-Host "==> Aufgabe '$BackupTaskName' entfernt. Vorhandene Backups bleiben unveraendert."
+    }
+    else {
+        Write-Host "==> Aufgabe '$BackupTaskName' ist nicht eingerichtet - nichts zu tun."
+    }
+    return
+}
+
+Write-Host ""
+Write-Host "    .-`"`"-."
+Write-Host "   /  ()  \    SovereignMind"
+Write-Host "   \      /    On-Premise KI-Gateway"
+Write-Host "    '-..-'"
+Write-Host ""
 
 $Repo = "Benexdrake/SovereignMind"
 $Token = $env:SOVEREIGNMIND_GHCR_TOKEN
 $GithubUser = if ($env:GITHUB_USER) { $env:GITHUB_USER } else { "Benexdrake" }
 
-if (-not $Token) {
+# Portal-Modus: Dateien und Images kommen vom Lizenzserver des Betreibers, der Lizenzschluessel ersetzt den GitHub-Token.
+$PortalUrl = if ($env:SOVEREIGNMIND_PORTAL_URL) { $env:SOVEREIGNMIND_PORTAL_URL.TrimEnd('/') } else { "" }
+$LicenseKey = $env:SOVEREIGNMIND_LICENSE_KEY
+$PortalHost = if ($PortalUrl) { ($PortalUrl -replace '^[a-zA-Z]+://', '') } else { "" }
+
+if ($PortalUrl) {
+    if (-not $LicenseKey) {
+        Write-Error "SOVEREIGNMIND_PORTAL_URL ist gesetzt, aber SOVEREIGNMIND_LICENSE_KEY fehlt."
+        exit 1
+    }
+}
+elseif (-not $Token) {
     Write-Error "SOVEREIGNMIND_GHCR_TOKEN nicht gesetzt. Siehe README.md, Abschnitt 'Installation beim Kunden'."
     exit 1
 }
@@ -45,6 +79,33 @@ docker compose version | Out-Null
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Docker-Compose-Plugin nicht gefunden ('docker compose'). Bitte Docker Desktop aktualisieren."
     exit 1
+}
+
+function Test-IsElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-DownloadSource {
+    # Quelle einer Repo-Datei: privates GitHub-Repo (Token) oder im Portal-Modus der Lizenzserver (Lizenzschluessel).
+    param([string]$RepoPath)
+    if ($PortalUrl) {
+        return @{
+            Url     = "$PortalUrl/api/dist/$(Split-Path $RepoPath -Leaf)"
+            Headers = @{ "X-License-Key" = $LicenseKey }
+        }
+    }
+    return @{
+        Url     = "https://api.github.com/repos/$Repo/contents/${RepoPath}?ref=$Ref"
+        Headers = @{ Authorization = "token $Token"; Accept = "application/vnd.github.raw" }
+    }
+}
+
+function Save-RepoFile {
+    param([string]$RepoPath, [string]$OutFile)
+    $Source = Get-DownloadSource $RepoPath
+    Invoke-WebRequest -Uri $Source.Url -Headers $Source.Headers -OutFile $OutFile
 }
 
 function Test-NvidiaGpu {
@@ -127,10 +188,48 @@ function Confirm-LicenseServerPrivacy {
     }
 }
 
-function Test-IsElevated {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+function Install-BackupTask {
+    # Optionaler Schritt (docs/pläne/postgres-haertung-und-backup/phase-2-geplante-backups-und-aufbewahrung.md):
+    # registriert die Aufgabe "SovereignMind-Backup", die taeglich scripts backup-db.ps1 ausfuehrt (Uhrzeit aus
+    # BACKUP_TIME, Default 02:00). Laeuft unter dem aktuellen Benutzer, braucht keine Administrator-Rechte; verpasste
+    # Laeufe (Rechner aus) werden beim naechsten Start nachgeholt. Existiert die Aufgabe schon, wird sie ohne
+    # Nachfrage aktualisiert. Nicht interaktiv: SOVEREIGNMIND_BACKUP_SCHEDULE=yes|no.
+    $Existing = Get-ScheduledTask -TaskName $BackupTaskName -ErrorAction SilentlyContinue
+    if (-not $Existing) {
+        $Answer = $env:SOVEREIGNMIND_BACKUP_SCHEDULE
+        if (-not $Answer) {
+            Write-Host ""
+            Write-Host "Optional: Taegliches automatisches Backup einrichten (Datenbank, Schluessel, Dokumente; 7 taegliche,"
+            Write-Host "4 woechentliche und 6 monatliche Staende werden aufbewahrt, Einstellungen in config.jsonl)."
+            $Answer = Read-Host "Jetzt einrichten? [J/n]"
+        }
+        if ($Answer -match '^(n|no|nein)$') {
+            Write-Host "==> Geplantes Backup uebersprungen. Erneuter Lauf dieses Skripts holt die Einrichtung jederzeit nach (manuell: backup-db.ps1)."
+            return
+        }
+    }
+
+    $Time = if ($EnvValues["BACKUP_TIME"]) { $EnvValues["BACKUP_TIME"] } else { "02:00" }
+    if ($Time -notmatch '^([01]?\d|2[0-3]):[0-5]\d$') {
+        Write-Warning "BACKUP_TIME '$Time' ist keine Uhrzeit (HH:mm) - verwende 02:00."
+        $Time = "02:00"
+    }
+    $Dir = (Get-Location).Path
+    New-Item -ItemType Directory -Force "backups" | Out-Null
+    $Action = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$Dir\backup-db.ps1`"" -WorkingDirectory $Dir
+    $Trigger = New-ScheduledTaskTrigger -Daily -At $Time
+    $Settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 4)
+    $Principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
+    try {
+        Register-ScheduledTask -TaskName $BackupTaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal `
+            -Description "Taegliches SovereignMind-Backup (backup-db.ps1) mit Aufbewahrung" -Force -ErrorAction Stop | Out-Null
+        Write-Host "==> Aufgabe '$BackupTaskName' eingerichtet: taeglich um $Time. Entfernen: install.ps1 -RemoveBackupTask"
+    }
+    catch {
+        Write-Warning "Aufgabe '$BackupTaskName' konnte nicht eingerichtet werden: $_"
+    }
 }
 
 function Install-HardwareAgent {
@@ -162,35 +261,37 @@ function Install-HardwareAgent {
     }
 
     $AssetName = "SovereignMind.HardwareAgent-win-x64.exe"
-    $ApiHeaders = @{
-        Authorization = "token $Token"
-        Accept        = "application/vnd.github+json"
-    }
+    if (-not $PortalUrl) {
+        $ApiHeaders = @{
+            Authorization = "token $Token"
+            Accept        = "application/vnd.github+json"
+        }
 
-    Write-Host "==> Suche Hardware-Agent-Release (Ref: $Ref)"
-    $Release = $null
-    if ($Ref -ne "latest") {
-        try {
-            $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Ref" -Headers $ApiHeaders
+        Write-Host "==> Suche Hardware-Agent-Release (Ref: $Ref)"
+        $Release = $null
+        if ($Ref -ne "latest") {
+            try {
+                $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Ref" -Headers $ApiHeaders
+            }
+            catch {
+                Write-Host "    Kein Release mit Tag '$Ref' gefunden - versuche 'latest'."
+            }
         }
-        catch {
-            Write-Host "    Kein Release mit Tag '$Ref' gefunden - versuche 'latest'."
+        if (-not $Release) {
+            try {
+                $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $ApiHeaders
+            }
+            catch {
+                Write-Warning "Kein GitHub-Release gefunden - Hardware-Agent-Installation uebersprungen (Release-Workflow evtl. noch nie fuer diesen Ref gelaufen)."
+                return
+            }
         }
-    }
-    if (-not $Release) {
-        try {
-            $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $ApiHeaders
-        }
-        catch {
-            Write-Warning "Kein GitHub-Release gefunden - Hardware-Agent-Installation uebersprungen (Release-Workflow evtl. noch nie fuer diesen Ref gelaufen)."
+
+        $Asset = $Release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+        if (-not $Asset) {
+            Write-Warning "Release-Asset '$AssetName' nicht im Release '$($Release.tag_name)' gefunden - Hardware-Agent-Installation uebersprungen."
             return
         }
-    }
-
-    $Asset = $Release.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
-    if (-not $Asset) {
-        Write-Warning "Release-Asset '$AssetName' nicht im Release '$($Release.tag_name)' gefunden - Hardware-Agent-Installation uebersprungen."
-        return
     }
 
     $AgentOutDir = "hardware-agent"
@@ -212,12 +313,37 @@ function Install-HardwareAgent {
         Start-Sleep -Seconds 1
     }
 
-    Write-Host "==> Lade Hardware-Agent-Binary aus Release '$($Release.tag_name)'"
-    $DownloadHeaders = @{
-        Authorization = "token $Token"
-        Accept        = "application/octet-stream"
+    if ($PortalUrl) {
+        # Portal-Modus: der Lizenzserver liefert die Binary aus, der Lizenzschluessel ersetzt den GitHub-Token.
+        # X-Sha256 der Antwort muss zur geladenen Datei passen.
+        Write-Host "==> Lade Hardware-Agent-Binary vom Lizenzserver ($PortalUrl)"
+        $PortalRef = if ($Ref -ne "latest") { "?ref=$([uri]::EscapeDataString($Ref))" } else { "" }
+        try {
+            $Response = Invoke-WebRequest -Uri "$PortalUrl/api/dist/hardware-agent/$AssetName$PortalRef" `
+                -Headers @{ "X-License-Key" = $LicenseKey } -OutFile $ExePath -PassThru
+        }
+        catch {
+            Write-Warning "Hardware-Agent konnte nicht vom Lizenzserver geladen werden ($($_.Exception.Message)) - Installation uebersprungen."
+            Remove-Item $ExePath -ErrorAction SilentlyContinue
+            return
+        }
+        $Expected = @($Response.Headers["X-Sha256"])[0]
+        $Actual = (Get-FileHash $ExePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($Expected -and $Expected -ne $Actual) {
+            Write-Warning "Pruefsumme des Hardware-Agents stimmt nicht (erwartet $Expected, erhalten $Actual) - Installation uebersprungen."
+            Remove-Item $ExePath -ErrorAction SilentlyContinue
+            return
+        }
+        Write-Host "    SHA256 geprueft: $Actual"
     }
-    Invoke-WebRequest -Uri $Asset.url -Headers $DownloadHeaders -OutFile $ExePath
+    else {
+        Write-Host "==> Lade Hardware-Agent-Binary aus Release '$($Release.tag_name)'"
+        $DownloadHeaders = @{
+            Authorization = "token $Token"
+            Accept        = "application/octet-stream"
+        }
+        Invoke-WebRequest -Uri $Asset.url -Headers $DownloadHeaders -OutFile $ExePath
+    }
 
     New-Service -Name $ServiceName `
         -BinaryPathName "`"$ExePath`"" `
@@ -275,13 +401,22 @@ function Set-ConfigValue([string]$Key, [string]$Value) {
     [Environment]::SetEnvironmentVariable($Key, $Value, "Process")
 }
 
+function Get-ComposeVolumeName([string]$Name) {
+    # Volume-Name wie ihn docker compose vergibt: <Projektname>_<Name>. Projektname = COMPOSE_PROJECT_NAME oder
+    # Verzeichnisname (klein, nur a-z0-9_-). Der Filter "name=backend-data$" traefe sonst auch Volumes
+    # anderer Compose-Projekte auf demselben Rechner (z. B. die Dev-Installation).
+    $Project = if ($env:COMPOSE_PROJECT_NAME) { $env:COMPOSE_PROJECT_NAME } else { Split-Path -Leaf (Get-Location).Path }
+    $Project = $Project.ToLower() -replace '[^a-z0-9_-]', ''
+    return "${Project}_$Name"
+}
+
 function Initialize-PostgresPassword {
     # Stellt sicher, dass POSTGRES_PASSWORD gesetzt ist (docs/pläne/postgres-umstellung/phase-2-...).
     # Ist es leer, wird ein zufaelliges Passwort erzeugt und in config.jsonl gespeichert. Existiert
     # bereits ein postgres-data-Volume, wird NIE ein neues Passwort erzeugt - es passte nicht mehr
     # zum initialisierten Cluster.
     if ($EnvValues["POSTGRES_PASSWORD"]) { return }
-    $Volume = docker volume ls -q --filter "name=postgres-data$"
+    $Volume = docker volume ls -q --filter ("name=^" + (Get-ComposeVolumeName "postgres-data") + '$')
     if ($Volume) {
         Write-Error ("POSTGRES_PASSWORD ist leer, aber das Volume postgres-data existiert bereits. Das Passwort steht im Datenbank-Cluster - " +
             "bitte den bisherigen Wert in config.jsonl eintragen (oder die Daten per 'docker compose down -v' verwerfen).")
@@ -310,6 +445,58 @@ function Initialize-JwtSecret {
     while ($Secret.Length -lt 48) { $Secret += ([char[]]'abcdefghjkmnpqrstuvwxyz23456789' | Get-Random) }
     Set-ConfigValue "JWT_SECRET" $Secret
     Write-Host "==> JWT_SECRET erzeugt und in config.jsonl gespeichert."
+}
+
+function Initialize-DataProtectionCertificate {
+    # Stellt sicher, dass ein Zertifikat zur Verschluesselung des Data-Protection-Schluesselrings
+    # vorhanden ist (docs/pläne/dataprotection-schluesselverschluesselung/02-phase-2-installer-doku.md).
+    # Leer -> self-signed RSA-2048 (20 Jahre) als PFX (Base64) + zufaelliges Passwort in config.jsonl.
+    # Ein zweiter Lauf erzeugt NIE ein neues Zertifikat, wenn Schluessel auf dem Volume liegen:
+    #  - Volume mit Klartext-Schluesseln: Migrationsfall - Zertifikat erzeugen, das Backend migriert beim Start.
+    #  - Volume mit verschluesselten Schluesseln, Wert fehlt: Zertifikat verloren -> Abbruch.
+    if ($EnvValues["DATAPROTECTION_CERT_PFX"]) { return }
+    $Volume = docker volume ls -q --filter ("name=^" + (Get-ComposeVolumeName "backend-data") + '$') | Select-Object -First 1
+    if ($Volume) {
+        # Keine Anfuehrungszeichen/spitzen Klammern im sh-Befehl: Windows PowerShell 5.1 entfernt eingebettete
+        # Anfuehrungszeichen beim Aufruf nativer Programme, "<masterKey" wuerde als Umleitung gelesen (alles = "encrypted").
+        $State = (docker run --rm -v "${Volume}:/data:ro" alpine sh -c 'ls /data/keys/*.xml >/dev/null 2>&1 || { echo none; exit 0; }; if grep -q masterKey /data/keys/*.xml; then echo plain; else echo encrypted; fi') | Select-Object -Last 1
+        if ($State -eq "encrypted") {
+            Write-Error ("DATAPROTECTION_CERT_PFX ist leer, aber das Volume backend-data enthaelt bereits verschluesselte Schluessel. " +
+                "Das Zertifikat ging verloren - bitte DATAPROTECTION_CERT_PFX/DATAPROTECTION_CERT_PASSWORD aus der gesicherten config.jsonl eintragen. " +
+                "Ohne Zertifikat sind die Connector-Geheimnisse nicht lesbar (Volume-Ordner keys/ verwerfen, Geheimnisse neu eingeben).")
+            exit 1
+        }
+        if ($State -notin @("none", "plain")) {
+            Write-Error "Zustand der Schluessel im Volume backend-data nicht pruefbar (docker run alpine fehlgeschlagen - das alpine-Image braucht beim ersten Mal Internetzugang zu Docker Hub) - Abbruch, um keine neuen Schluessel/Zertifikate ueber bestehende zu legen."
+            exit 1
+        }
+        if ($State -eq "plain") {
+            # Bestandsinstallation: Zertifikat erzeugen, das Backend verschluesselt den Schluesselring beim naechsten
+            # Start selbst (DataProtectionKeyMigrator, nur mit Zertifikat).
+            Write-Warning "Klartext-Schluessel auf dem Volume backend-data gefunden - es wird ein Zertifikat erzeugt, das Backend verschluesselt den Schluesselring beim naechsten Start (Migration). config.jsonl danach getrennt von Volume und Backups sichern."
+        }
+    }
+    $Bytes = New-Object byte[] 48
+    $Rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $Rng.GetBytes($Bytes)
+    $Rng.Dispose()
+    $Password = ([Convert]::ToBase64String($Bytes) -replace '[^A-Za-z0-9]', '')
+    while ($Password.Length -lt 32) { $Password += ([char[]]'abcdefghjkmnpqrstuvwxyz23456789' | Get-Random) }
+    $Password = $Password.Substring(0, 32)
+
+    $Rsa = [System.Security.Cryptography.RSA]::Create(2048)
+    $Request = New-Object System.Security.Cryptography.X509Certificates.CertificateRequest(
+        "CN=SovereignMind DataProtection", $Rsa,
+        [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+        [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    $Certificate = $Request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddDays(-1), [DateTimeOffset]::UtcNow.AddYears(20))
+    $Pfx = $Certificate.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, $Password)
+    $Certificate.Dispose()
+    $Rsa.Dispose()
+
+    Set-ConfigValue "DATAPROTECTION_CERT_PFX" ([Convert]::ToBase64String($Pfx))
+    Set-ConfigValue "DATAPROTECTION_CERT_PASSWORD" $Password
+    Write-Host "==> DATAPROTECTION_CERT_PFX/-PASSWORD erzeugt und in config.jsonl gespeichert (config.jsonl getrennt von Volume und Backups sichern!)."
 }
 
 function Test-OllamaReachable {
@@ -459,18 +646,21 @@ function Install-NativeOllama {
     }
 }
 
-Write-Host "==> Login bei ghcr.io"
-# Kein "$Token | docker login": Windows PowerShell 5.1 haengt beim Pipen "\r\n" an, GHCR lehnt den Token dann mit "denied" ab.
-cmd /c "<nul set /p =$Token| docker login ghcr.io -u $GithubUser --password-stdin"
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "docker login bei ghcr.io fehlgeschlagen. Token pruefen (Scope read:packages)."
-    exit 1
+if ($PortalUrl) {
+    # Registry-Proxy des Portals: Benutzername beliebig, Passwort = Lizenzschluessel (docker login verlangt HTTPS, ausser bei localhost).
+    Write-Host "==> Login beim Lizenzserver ($PortalHost)"
+    cmd /c "<nul set /p =$LicenseKey| docker login $PortalHost -u license --password-stdin"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "docker login bei $PortalHost fehlgeschlagen. Lizenzschluessel und Adresse pruefen (HTTPS noetig, ausser localhost)."
+        exit 1
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 Push-Location $TargetDir
 try {
-    Write-Host "==> Lade Compose-Dateien von GitHub (Ref: $Ref)"
+    if ($PortalUrl) { Write-Host "==> Lade Compose-Dateien vom Lizenzserver ($PortalUrl)" }
+    else { Write-Host "==> Lade Compose-Dateien von GitHub (Ref: $Ref)" }
     $Files = @(
         "docker-compose.yml",
         "docker-compose.images.yml",
@@ -478,20 +668,15 @@ try {
         "docker-compose.rocm.yml",
         ".env.example"
     )
-    $Headers = @{
-        Authorization = "token $Token"
-        Accept        = "application/vnd.github.raw"
-    }
     foreach ($f in $Files) {
         Write-Host "    $f"
-        $Url = "https://api.github.com/repos/$Repo/contents/${f}?ref=$Ref"
-        Invoke-WebRequest -Uri $Url -Headers $Headers -OutFile $f
+        Save-RepoFile $f $f
     }
 
     # Backup-/Restore-Skripte (liegen im Repo unter scripts/, hier flach neben den Compose-Dateien).
-    foreach ($f in "backup-db.ps1", "restore-db.ps1") {
+    foreach ($f in "backup-db.ps1", "backup-prune.ps1", "restore-db.ps1") {
         Write-Host "    $f"
-        Invoke-WebRequest -Uri "https://api.github.com/repos/$Repo/contents/scripts/${f}?ref=$Ref" -Headers $Headers -OutFile $f
+        Save-RepoFile "scripts/$f" $f
     }
 
     # models.json (Modell-Katalog, Phase 2a, docs/pläne/log-modelle-hardware-anpassungen/02a-...)
@@ -501,8 +686,7 @@ try {
     # bekommen).
     if (-not (Test-Path "models.json")) {
         Write-Host "    models.json"
-        $ModelsJsonUrl = "https://api.github.com/repos/$Repo/contents/models.json?ref=$Ref"
-        Invoke-WebRequest -Uri $ModelsJsonUrl -Headers $Headers -OutFile "models.json"
+        Save-RepoFile "models.json" "models.json"
     }
     else {
         Write-Host "==> Vorhandene models.json unveraendert uebernommen."
@@ -514,12 +698,12 @@ try {
     $ConfigIsNew = -not (Test-Path "config.jsonl")
     if ($ConfigIsNew) {
         Write-Host "    config.jsonl"
-        $ConfigUrl = "https://api.github.com/repos/$Repo/contents/config.jsonl?ref=$Ref"
-        Invoke-WebRequest -Uri $ConfigUrl -Headers $Headers -OutFile "config.jsonl"
+        Save-RepoFile "config.jsonl" "config.jsonl"
     }
     else {
         Write-Host "==> Vorhandene config.jsonl uebernommen (Werte bleiben unveraendert)."
-        Add-MissingConfigKeys -Url "https://api.github.com/repos/$Repo/contents/config.jsonl?ref=$Ref" -Headers $Headers
+        $ConfigSource = Get-DownloadSource "config.jsonl"
+        Add-MissingConfigKeys -Url $ConfigSource.Url -Headers $ConfigSource.Headers
     }
 
     $EnvIsNew = -not (Test-Path ".env")
@@ -529,6 +713,21 @@ try {
     }
     else {
         Write-Host "==> Vorhandene .env unveraendert uebernommen."
+    }
+
+    # Portal-Modus: Images laufen ueber den Registry-Proxy des Lizenzservers, die Online-Aktivierung ist gleich mit eingerichtet.
+    # Die Werte gehoeren in .env (nicht nur in die Sitzung), damit spaetere `docker compose`-Aufrufe und Updates dasselbe sehen.
+    if ($PortalUrl) {
+        $PortalValues = [ordered]@{
+            SOVEREIGNMIND_REGISTRY = "$PortalHost/benexdrake"
+            LICENSE_SERVER_URL     = $PortalUrl
+            LICENSE_KEY            = $LicenseKey
+        }
+        $Kept = @(Get-Content ".env" -Encoding UTF8 | Where-Object { $Line = $_; -not ($PortalValues.Keys | Where-Object { $Line -match "^\s*$_\s*=" }) })
+        $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        $NewEnv = ($Kept + ($PortalValues.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })) -join "`n"
+        [System.IO.File]::WriteAllText((Join-Path (Get-Location) ".env"), $NewEnv + "`n", $Utf8NoBom)
+        Write-Host "==> Portal-Modus: Registry $PortalHost/benexdrake, Online-Aktivierung ueber $PortalUrl (in .env eingetragen)."
     }
 
     $EnvValues = @{}
@@ -541,6 +740,7 @@ try {
     Confirm-LicenseServerPrivacy
     Initialize-PostgresPassword
     Initialize-JwtSecret
+    Initialize-DataProtectionCertificate
 
     # Alte Installationen koennen noch LLM_SERVER=1 (llama.cpp) in config.jsonl/.env haben - der Pfad
     # ist entfernt, Ollama ist das einzige Backend. Nur ein Hinweis, kein Abbruch.
@@ -566,9 +766,19 @@ try {
 
     Write-Host "==> Ziehe Images (Version: $Version)"
     docker compose @ComposeFiles pull
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "docker compose pull fehlgeschlagen - Abbruch (Registry-Zugang/Internet pruefen)."
+        exit 1
+    }
 
     Write-Host "==> Starte Stack"
-    docker compose @ComposeFiles up -d
+    # --no-build: beim Kunden gibt es keine Build-Kontexte, die *-worker-base-Services aus docker-compose.yml
+    # wuerden sonst einen Build versuchen und `up` scheitern lassen.
+    docker compose @ComposeFiles up -d --no-build
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "docker compose up fehlgeschlagen - der Stack laeuft nicht. Ausgabe oben pruefen, danach den Installer erneut starten."
+        exit 1
+    }
 
     # Modelle der Worker liegen in Volumes, nicht im Image (analog zu ollama pull). Fehlschlag = nur
     # Warnung, die Worker laden bei Bedarf nach.
@@ -581,6 +791,7 @@ try {
     }
 
     Install-HardwareAgent
+    Install-BackupTask
 
     $FrontendPort = if ($EnvValues["FRONTEND_PORT"]) { $EnvValues["FRONTEND_PORT"] } else { "3000" }
     Write-Host ""
