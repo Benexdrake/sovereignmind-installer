@@ -183,6 +183,17 @@ Aufbewahrung, Zweitziel und Uhrzeit stehen in der `config.jsonl` (`BACKUP_*`). D
 Backup-Ordner aufbewahren, den Ordner `backups/` geschützt. Qdrant ist nicht enthalten
 (Dokumente werden neu eingelesen).
 
+**Das Backup enthält keine Zertifikate.** Zusätzlich ein Recovery-Kit anlegen (`bash recovery-kit.sh export` bzw.
+`.ecovery-kit.ps1 export`) und es **getrennt vom Volume und von den Backups** aufbewahren. Was bei Verlust von
+Zertifikat oder `config.jsonl` zu tun ist: [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md).
+
+| Verloren | Folge |
+|---|---|
+| DataProtection-Zertifikat | Paketschlüssel und Connector-Geheimnisse unlesbar (Warnbanner im Admin-Bereich) |
+| `JWT_SECRET` | alle Anmeldungen ungültig, keine Datenverluste |
+| `LICENSE_KEY` / `LICENSE_SERVER_URL` | Heartbeat und Paketschlüssel-Abruf stoppen |
+| `GHCR_TOKEN` | keine Updates, Betrieb läuft |
+
 ## Sicherheitshinweis
 
 `docker login` speichert das Token je nach System im Credential-Store oder unverschlüsselt in
