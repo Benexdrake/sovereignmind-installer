@@ -3,14 +3,14 @@
 # Laedt die Compose-Dateien + .env-Vorlage + config.jsonl aus dem (privaten!) GitHub-Repo, loggt
 # sich bei der privaten GHCR-Registry ein, pullt die vorgebauten Images und
 # startet den kompletten Stack (Ollama, Qdrant, Ingestion-Worker, Backend,
-# Frontend). Bash-Gegenstueck: scripts/install.sh - siehe dort fuer
+# Frontend). Bash-Gegenstueck: 9.Support/scripts/install.sh - siehe dort fuer
 # ausfuehrlichere Kommentare, dieses Skript spiegelt denselben Ablauf.
 #
 # Aufruf (PowerShell):
 #   $env:SOVEREIGNMIND_GHCR_TOKEN = "<token>"
 #   .\install.ps1
 #
-# Parameter/Env-Variablen: siehe scripts/install.sh (identische Namen/Defaults).
+# Parameter/Env-Variablen: siehe 9.Support/scripts/install.sh (identische Namen/Defaults).
 #
 # GPU-Erkennung: Nvidia ueber nvidia-smi plus Test-NvidiaDockerReachable (ein Wegwerf-`docker run
 # --gpus all`) - nur dann wird docker-compose.nvidia.yml angehaengt, sonst wuerde `docker compose up`
@@ -670,13 +670,18 @@ try {
     )
     foreach ($f in $Files) {
         Write-Host "    $f"
-        Save-RepoFile $f $f
+        Save-RepoFile "8.Docker/$f" $f
     }
+    # Im Repo liegen die Compose-Dateien in 8.Docker/ (models.json und backups/ eine Ebene darueber), hier flach in einem
+    # Ordner. Die vom Lizenzserver gelieferte Datei ist schon umgeschrieben, der Schritt idempotent.
+    $ComposePath = Join-Path (Get-Location) "docker-compose.yml"
+    $ComposeText = [System.IO.File]::ReadAllText($ComposePath) -replace '\.\./models\.json', './models.json' -replace '\.\./backups', './backups'
+    [System.IO.File]::WriteAllText($ComposePath, $ComposeText, (New-Object System.Text.UTF8Encoding($false)))
 
-    # Backup-/Restore-Skripte (liegen im Repo unter scripts/, hier flach neben den Compose-Dateien).
+    # Backup-/Restore-Skripte (liegen im Repo unter 9.Support/scripts/, hier flach neben den Compose-Dateien).
     foreach ($f in "backup-db.ps1", "backup-prune.ps1", "restore-db.ps1") {
         Write-Host "    $f"
-        Save-RepoFile "scripts/$f" $f
+        Save-RepoFile "9.Support/scripts/$f" $f
     }
 
     # models.json (Modell-Katalog, Phase 2a, docs/pläne/log-modelle-hardware-anpassungen/02a-...)
@@ -698,11 +703,11 @@ try {
     $ConfigIsNew = -not (Test-Path "config.jsonl")
     if ($ConfigIsNew) {
         Write-Host "    config.jsonl"
-        Save-RepoFile "config.jsonl" "config.jsonl"
+        Save-RepoFile "8.Docker/config.jsonl" "config.jsonl"
     }
     else {
         Write-Host "==> Vorhandene config.jsonl uebernommen (Werte bleiben unveraendert)."
-        $ConfigSource = Get-DownloadSource "config.jsonl"
+        $ConfigSource = Get-DownloadSource "8.Docker/config.jsonl"
         Add-MissingConfigKeys -Url $ConfigSource.Url -Headers $ConfigSource.Headers
     }
 

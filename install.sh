@@ -124,8 +124,11 @@ fi
 for f in docker-compose.yml docker-compose.images.yml docker-compose.nvidia.yml \
   docker-compose.rocm.yml .env.example; do
   echo "    $f" >&2
-  fetch "$f" "$f"
+  fetch "8.Docker/$f" "$f"
 done
+# Im Repo liegen die Compose-Dateien in 8.Docker/ (models.json und backups/ eine Ebene darüber), hier flach in einem
+# Ordner. Die vom Lizenzserver gelieferte Datei ist schon umgeschrieben (Dockerfile der Administration.Api), der Schritt idempotent.
+sed 's#\.\./models\.json#./models.json#g; s#\.\./backups#./backups#g' docker-compose.yml > docker-compose.yml.tmp && mv docker-compose.yml.tmp docker-compose.yml
 
 # models.json (Modell-Katalog, Phase 2a, docs/pläne/log-modelle-hardware-anpassungen/02a-...) nur
 # laden, wenn noch keine vorhanden ist - der Admin kann die Datei nach der Erstinstallation
@@ -145,11 +148,11 @@ fi
 # überschreiben. Fehlende neue Schlüssel fangen die Defaults in docker-compose.yml ab.
 if [ ! -f config.jsonl ]; then
   echo "    config.jsonl" >&2
-  fetch config.jsonl config.jsonl
+  fetch 8.Docker/config.jsonl config.jsonl
 else
   echo "==> Vorhandene config.jsonl uebernommen (Werte bleiben unveraendert)." >&2
   # Neue Schlüssel späterer Releases ergänzen (nur hinzufügen, nie bestehende Werte ändern).
-  if fetch config.jsonl config.jsonl.new; then
+  if fetch 8.Docker/config.jsonl config.jsonl.new; then
     added_keys=()
     while IFS= read -r line || [ -n "$line" ]; do
       if [[ "$line" =~ ^\{\"key\":\"([A-Za-z_][A-Za-z0-9_]*)\" ]]; then
@@ -169,11 +172,11 @@ else
   rm -f config.jsonl.new
 fi
 
-# scripts/*.sh liegen im Repo unter scripts/, werden hier aber flach abgelegt (wie die
+# 9.Support/scripts/*.sh liegen im Repo unter 9.Support/scripts/, werden hier aber flach abgelegt (wie die
 # Compose-Dateien) - der Installer geht nicht von einem vollständigen Repo-Checkout aus.
 for f in ensure-docker.sh load-config.sh backup-db.sh backup-prune.sh restore-db.sh; do
   echo "    $f" >&2
-  fetch "scripts/${f}" "$f"
+  fetch "9.Support/scripts/${f}" "$f"
 done
 
 # shellcheck disable=SC1091

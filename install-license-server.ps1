@@ -54,7 +54,7 @@ Set-Location $TargetDir
 
 Write-Host "==> Lade Compose-Datei von GitHub (Ref: $Ref)"
 $Headers = @{ Authorization = "token $Token"; Accept = "application/vnd.github.raw" }
-foreach ($File in @($ComposeFile, "Caddyfile.license-server", "scripts/backup-license-server.ps1")) {
+foreach ($File in @($ComposeFile, "Caddyfile.license-server", "9.Support/scripts/backup-license-server.ps1")) {
     Write-Host "    $File"
     Invoke-WebRequest -Uri "https://api.github.com/repos/$Repo/contents/$File`?ref=$Ref" -Headers $Headers -OutFile (Split-Path $File -Leaf)
 }

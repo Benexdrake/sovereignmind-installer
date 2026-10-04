@@ -53,7 +53,7 @@ mkdir -p "$TARGET_DIR"
 cd "$TARGET_DIR"
 
 echo "==> Lade Compose-Datei von GitHub (Ref: $REF)" >&2
-for f in "$COMPOSE_FILE" Caddyfile.license-server scripts/backup-license-server.sh; do
+for f in "$COMPOSE_FILE" Caddyfile.license-server 9.Support/scripts/backup-license-server.sh; do
   echo "    $f" >&2
   curl -fsSL \
     -H "Authorization: token ${SOVEREIGNMIND_GHCR_TOKEN}" \
