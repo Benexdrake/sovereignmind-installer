@@ -372,6 +372,10 @@ fi
 
 export SOVEREIGNMIND_VERSION="$VERSION"
 
+# Backup-Ordner vor dem Start anlegen: docker-compose.yml bindet ihn als ./backups:/backups ein, und Docker legt einen fehlenden
+# Bind-Mount-Quellordner unter Linux als root an - danach könnte der Benutzer weder backup-db.sh noch der cron-Job dort schreiben.
+mkdir -p "${BACKUP_DIR:-./backups}"
+
 # Optional: tägliches Backup per cron (BACKUP_TIME aus config.jsonl, Default 02:00). Ein vorhandener Eintrag wird
 # ohne Nachfrage aktualisiert; sonst Nachfrage am Terminal oder SOVEREIGNMIND_BACKUP_SCHEDULE=yes|no.
 setup_backup_schedule() {
