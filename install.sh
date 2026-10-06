@@ -174,7 +174,7 @@ fi
 
 # 9.Support/scripts/*.sh liegen im Repo unter 9.Support/scripts/, werden hier aber flach abgelegt (wie die
 # Compose-Dateien) - der Installer geht nicht von einem vollständigen Repo-Checkout aus.
-for f in ensure-docker.sh load-config.sh backup-db.sh backup-prune.sh restore-db.sh; do
+for f in ensure-docker.sh load-config.sh backup-db.sh backup-prune.sh restore-db.sh recovery-kit.sh; do
   echo "    $f" >&2
   fetch "9.Support/scripts/${f}" "$f"
 done
@@ -434,6 +434,28 @@ for worker in ingestion-worker voice-worker; do
   docker exec "sovereignmind-$worker" python -m app.prefetch ||
     echo "WARNUNG: Modell-Download für $worker fehlgeschlagen - später manuell nachholen: docker exec sovereignmind-$worker python -m app.prefetch" >&2
 done
+
+# Recovery-Kit (docs/pläne/schluesselverlust-wiederherstellung/02-phase-2-recovery-kit.md): Geheimnisse (Zertifikat,
+# JWT_SECRET, Lizenz) getrennt vom Volume-Backup sichern. Ohne Kit sind Connector-Geheimnisse und Paketschlüssel bei
+# Verlust der config.jsonl nicht wiederherstellbar. Nur mit Terminal (die Passphrase wird abgefragt), sonst Hinweis.
+offer_recovery_kit() {
+  [ -n "${DATAPROTECTION_CERT_PFX:-}" ] || return 0
+  docker exec sovereignmind-backend test -f /data/recovery-kit.json 2>/dev/null && return 0
+  {
+    echo ""
+    echo "WICHTIG - Recovery-Kit: Ohne eine getrennte Sicherung Ihrer Geheimnisse (DataProtection-Zertifikat, JWT_SECRET, Lizenz)"
+    echo "gehen bei Verlust der config.jsonl die Connector-Geheimnisse und Paketschlüssel unwiederbringlich verloren."
+  } >&2
+  if [ -t 0 ] && [ -t 1 ]; then
+    echo "Das Kit wird jetzt mit einer Passphrase erstellt, die nur Sie kennen (der Betreiber kann sie nicht zurücksetzen)." >&2
+    bash ./recovery-kit.sh export ||
+      echo "WARNUNG: Recovery-Kit nicht erstellt - bitte nachholen: bash recovery-kit.sh export" >&2
+  else
+    echo "Bitte in einem Terminal nachholen: bash recovery-kit.sh export" >&2
+  fi
+}
+
+offer_recovery_kit
 
 setup_backup_schedule
 

@@ -188,6 +188,24 @@ function Confirm-LicenseServerPrivacy {
     }
 }
 
+# Recovery-Kit (docs/plaene/schluesselverlust-wiederherstellung/02-phase-2-recovery-kit.md): Geheimnisse (Zertifikat,
+# JWT_SECRET, Lizenz) getrennt vom Volume-Backup sichern. Nur mit Terminal (die Passphrase wird abgefragt), sonst Hinweis.
+function Install-RecoveryKit {
+    if (-not $EnvValues["DATAPROTECTION_CERT_PFX"] -and -not $env:DATAPROTECTION_CERT_PFX) { return }
+    docker exec sovereignmind-backend test -f /data/recovery-kit.json 2>$null
+    if ($LASTEXITCODE -eq 0) { return }
+    Write-Host ""
+    Write-Host "WICHTIG - Recovery-Kit: Ohne eine getrennte Sicherung Ihrer Geheimnisse (DataProtection-Zertifikat, JWT_SECRET, Lizenz)"
+    Write-Host "gehen bei Verlust der config.jsonl die Connector-Geheimnisse und Paketschluessel unwiederbringlich verloren."
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+        Write-Host "Das Kit wird jetzt mit einer Passphrase erstellt, die nur Sie kennen (der Betreiber kann sie nicht zuruecksetzen)."
+        try { & (Join-Path (Get-Location) "recovery-kit.ps1") export }
+        catch { Write-Warning "Recovery-Kit nicht erstellt - bitte nachholen: .\recovery-kit.ps1 export" }
+    } else {
+        Write-Host "Bitte in einem Terminal nachholen: .\recovery-kit.ps1 export"
+    }
+}
+
 function Install-BackupTask {
     # Optionaler Schritt (docs/pläne/postgres-haertung-und-backup/phase-2-geplante-backups-und-aufbewahrung.md):
     # registriert die Aufgabe "SovereignMind-Backup", die taeglich scripts backup-db.ps1 ausfuehrt (Uhrzeit aus
@@ -679,7 +697,7 @@ try {
     [System.IO.File]::WriteAllText($ComposePath, $ComposeText, (New-Object System.Text.UTF8Encoding($false)))
 
     # Backup-/Restore-Skripte (liegen im Repo unter 9.Support/scripts/, hier flach neben den Compose-Dateien).
-    foreach ($f in "backup-db.ps1", "backup-prune.ps1", "restore-db.ps1") {
+    foreach ($f in "backup-db.ps1", "backup-prune.ps1", "restore-db.ps1", "recovery-kit.ps1") {
         Write-Host "    $f"
         Save-RepoFile "9.Support/scripts/$f" $f
     }
@@ -796,6 +814,7 @@ try {
     }
 
     Install-HardwareAgent
+    Install-RecoveryKit
     Install-BackupTask
 
     $FrontendPort = if ($EnvValues["FRONTEND_PORT"]) { $EnvValues["FRONTEND_PORT"] } else { "3000" }
