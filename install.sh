@@ -342,7 +342,7 @@ fi
 
 # 9.Support/scripts/*.sh liegen im Repo unter 9.Support/scripts/, werden hier aber flach abgelegt (wie die
 # Compose-Dateien) - der Installer geht nicht von einem vollständigen Repo-Checkout aus.
-for f in ensure-docker.sh load-config.sh backup-db.sh backup-prune.sh restore-db.sh recovery-kit.sh; do
+for f in ensure-docker.sh load-config.sh detect-vram.sh backup-db.sh backup-prune.sh restore-db.sh recovery-kit.sh; do
   echo "    $f" >&2
   fetch "9.Support/scripts/${f}" "$f"
 done
@@ -515,10 +515,25 @@ FILES=(-f docker-compose.yml -f docker-compose.images.yml)
 # Ollama läuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
 ensure_native_ollama
 
-# XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell). Standard ist XTTS_LICENSE_ACCEPTED=1 (config.jsonl),
-# der Installer fragt nicht nach und gibt nur einen Hinweis aus; mit 0 in config.jsonl nutzt die Sprachausgabe Piper (CPU).
+# XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell) und braucht neben dem Chat-Modell viel VRAM (ca. 4 GB).
+# Standard in config.jsonl ist XTTS_LICENSE_ACCEPTED="" (automatisch): bei mehr als 10 GB VRAM setzt der Installer 1 (GPU, mit
+# Hinweis, ohne Rückfrage), sonst bleibt es leer und die Sprachausgabe nutzt Piper (CPU). Ein gesetzter Wert (0/1) bleibt unangetastet.
+XTTS_MIN_VRAM_GB=10
 ask_xtts_license() {
-  [ "${XTTS_LICENSE_ACCEPTED:-1}" != "0" ] || return 0
+  if [ -z "${XTTS_LICENSE_ACCEPTED:-}" ]; then
+    # shellcheck disable=SC1091
+    source ./detect-vram.sh
+    local vram_gb
+    vram_gb="$(detect_vram_gb)"
+    if [[ "$vram_gb" =~ ^[0-9]+$ ]] && [ "$vram_gb" -gt "$XTTS_MIN_VRAM_GB" ]; then
+      config_set XTTS_LICENSE_ACCEPTED 1
+      echo "==> ${vram_gb} GB VRAM erkannt - XTTS-v2 (GPU-Sprachausgabe) wird aktiviert (XTTS_LICENSE_ACCEPTED=1 in config.jsonl)." >&2
+    else
+      echo "==> ${vram_gb:-unbekannt} GB VRAM erkannt (Schwelle: mehr als ${XTTS_MIN_VRAM_GB} GB) - Sprachausgabe läuft mit Piper auf der CPU." >&2
+      return 0
+    fi
+  fi
+  [ "$XTTS_LICENSE_ACCEPTED" != "0" ] || return 0
   echo "Hinweis: Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (CPML, nur nicht-kommerzielle Nutzung, https://coqui.ai/cpml). Abschalten: XTTS_LICENSE_ACCEPTED=0 in config.jsonl." >&2
 }
 
