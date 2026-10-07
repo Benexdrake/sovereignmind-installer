@@ -58,7 +58,8 @@ in einer privaten Registry (GitHub Container Registry) und werden mit einem Zuga
 
 ## Voraussetzungen
 
-- Docker mit Compose-Plugin (Docker Desktop unter Windows und macOS)
+- Docker mit Compose-Plugin (Docker Desktop unter Windows und macOS). Unter Ubuntu/Debian
+  installiert und startet der Installer Docker bei Bedarf selbst, siehe „Linux: frisches System“
 - Internetzugang für Installation und den ersten Modell-Download (ca. 5 GB Worker-Modelle,
   zusätzlich zu den Ollama-Modellen; unter Windows lädt der
   Installer zusätzlich Ollama, ca. 1,5 GB, sofern es fehlt)
@@ -95,6 +96,25 @@ $env:SOVEREIGNMIND_GHCR_TOKEN = "<dein-token>"
 irm https://raw.githubusercontent.com/Benexdrake/sovereignmind-installer/main/install.ps1 | iex
 ```
 
+### Linux: frisches System
+
+Auf einem frisch installierten Ubuntu/Debian ist keine Vorarbeit nötig. Fehlt etwas, nennt der
+Installer es und fragt einmal nach (sudo-Passwort wird bei Bedarf abgefragt):
+
+- Docker Engine mit Compose-Plugin aus dem offiziellen Docker-apt-Repository; der Dienst wird
+  gestartet und beim Boot aktiviert
+- dein Benutzer wird zur Gruppe `docker` hinzugefügt (das entspricht Root-Rechten auf dem Rechner)
+- `curl`, und falls Ollama fehlt, `zstd` und `pciutils` (der Ollama-Installer braucht sie, u. a. für
+  die Erkennung der AMD-/Nvidia-GPU)
+
+Ist die Gruppe `docker` im aktuellen Terminal noch nicht aktiv, startet sich der Installer bei
+Aufruf als Datei (`bash install.sh`) selbst neu. Bei `curl … | bash` geht das nicht: dann bitte ein
+neues Terminal öffnen und denselben Befehl erneut ausführen (der Installer ist idempotent).
+
+Ohne Rückfrage (z. B. per SSH ohne Terminal): `SOVEREIGNMIND_INSTALL_DOCKER=yes` setzen. Andere
+Distributionen als Ubuntu/Debian müssen Docker selbst installieren
+(<https://docs.docker.com/engine/install/>).
+
 Danach ist die App unter <http://localhost:3000> erreichbar. Beim ersten Aufruf leitet sie auf
 `/setup` weiter, wo aus der Lizenzdatei das Unternehmen und der erste Admin angelegt werden.
 Beim ersten Start werden die KI-Modelle geladen, das dauert je nach Verbindung einige Minuten.
@@ -112,6 +132,7 @@ und startet den Stack. Erneutes Ausführen aktualisiert auf die neueste Version.
 | Variable | Bedeutung | Standard |
 |---|---|---|
 | `SOVEREIGNMIND_GHCR_TOKEN` | Zugangstoken (`read:packages`) | – |
+| `SOVEREIGNMIND_INSTALL_DOCKER` | Linux: fehlendes Docker, Docker-Gruppe und Hilfsprogramme ohne Rückfrage einrichten (`yes`) oder ablehnen (`no`) | Rückfrage am Terminal |
 | `GITHUB_USER` | Benutzername für `docker login` (optional) | `Benexdrake` |
 | `SOVEREIGNMIND_DIR` | Installationsverzeichnis | `./sovereignmind` |
 | `SOVEREIGNMIND_REF` | Version (Tag oder Branch) | `main` |

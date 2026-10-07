@@ -81,10 +81,186 @@ elif [ -z "${SOVEREIGNMIND_GHCR_TOKEN:-}" ]; then
 fi
 GITHUB_USER="${GITHUB_USER:-Benexdrake}"
 
+# --- docker-bootstrap begin (installer-docker-bootstrap-test.sh schneidet diesen Block aus - Marker nicht entfernen)
+# Linux: fehlende Voraussetzungen (Docker mit Compose-Plugin, curl, zstd/pciutils für den Ollama-Installer) und den
+# Docker-Dienst einrichten, damit der Installer auf einem frisch installierten Ubuntu/Debian ohne Vorarbeit durchläuft.
+# Das steht bewusst hier und nicht in ensure-docker.sh: install.sh ist die einzige Datei, die vor dem Docker-Login
+# vorhanden ist. macOS/Windows: Docker Desktop bleibt Sache des Benutzers (ensure-docker.sh startet es später).
+# Antwort auf die Rückfrage vorab: SOVEREIGNMIND_INSTALL_DOCKER=yes|no (ohne Terminal und ohne Angabe: nein).
+SYSTEM_SETUP_APPROVED=0
+
+as_root() {
+  if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
+}
+
+apt_get() {
+  # Lock-Timeout: auf frisch installierten Systemen hält unattended-upgrades/PackageKit anfangs oft die dpkg-Sperre.
+  as_root env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=300 -y "$@"
+}
+
+os_field() {
+  ( . /etc/os-release 2>/dev/null; printf '%s' "${!1:-}" )
+}
+
+# Gibt "<ubuntu|debian> <codename>" für das Docker-apt-Repository aus (Ableger wie Linux Mint über ID_LIKE/UBUNTU_CODENAME).
+docker_repo_target() {
+  local id like codename
+  id="$(os_field ID)"
+  like="$(os_field ID_LIKE)"
+  case " $id $like " in
+    *" ubuntu "*)
+      codename="$(os_field UBUNTU_CODENAME)"
+      [ -n "$codename" ] || codename="$(os_field VERSION_CODENAME)"
+      [ -n "$codename" ] && echo "ubuntu $codename"
+      ;;
+    *" debian "*)
+      codename="$(os_field VERSION_CODENAME)"
+      [ -n "$codename" ] && echo "debian $codename"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+confirm_system_setup() {
+  local answer="${SOVEREIGNMIND_INSTALL_DOCKER:-}"
+  if [ -z "$answer" ]; then
+    [ -r /dev/tty ] || return 1
+    read -r -p "$1 [J/n] " answer </dev/tty || return 1
+  fi
+  case "$answer" in "" | j | J | y | Y | yes | Yes | ja | Ja) return 0 ;; *) return 1 ;; esac
+}
+
+install_docker_engine() {
+  # Offizielle Anleitung: https://docs.docker.com/engine/install/ubuntu/ (apt-Repository, nicht das Convenience-Skript).
+  local target distro codename
+  target="$(docker_repo_target)"
+  distro="${target%% *}"
+  codename="${target##* }"
+  apt_get update
+  apt_get install ca-certificates curl
+  as_root install -m 0755 -d /etc/apt/keyrings
+  as_root curl -fsSL "https://download.docker.com/linux/${distro}/gpg" -o /etc/apt/keyrings/docker.asc
+  as_root chmod a+r /etc/apt/keyrings/docker.asc
+  printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
+    "$(dpkg --print-architecture)" "$distro" "$codename" | as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
+  apt_get update
+  apt_get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+bootstrap_linux_prerequisites() {
+  [ "$(uname -s)" = "Linux" ] || return 0
+  local pkgs=() need_docker=0
+  command -v curl >/dev/null 2>&1 || pkgs+=(curl)
+  # zstd und lspci/lshw braucht nur der Ollama-Installer (Entpacken bzw. AMD-/Nvidia-Erkennung).
+  if ! command -v ollama >/dev/null 2>&1; then
+    command -v zstd >/dev/null 2>&1 || pkgs+=(zstd)
+    command -v lspci >/dev/null 2>&1 || pkgs+=(pciutils)
+  fi
+  command -v docker >/dev/null 2>&1 || need_docker=1
+  if [ "$need_docker" -eq 0 ] && [ "${#pkgs[@]}" -eq 0 ]; then
+    return 0
+  fi
+
+  if ! command -v apt-get >/dev/null 2>&1 || { [ "$need_docker" -eq 1 ] && ! docker_repo_target >/dev/null; }; then
+    if [ "$need_docker" -eq 1 ]; then
+      echo "Docker nicht gefunden. Die automatische Installation gibt es nur für Ubuntu/Debian - bitte manuell installieren: https://docs.docker.com/engine/install/" >&2
+      exit 1
+    fi
+    echo "Hinweis: Es fehlen Programme (${pkgs[*]}) - bitte nachinstallieren, falls der Installer daran scheitert." >&2
+    return 0
+  fi
+  if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
+    echo "Es fehlen Voraussetzungen, sudo ist aber nicht vorhanden. Bitte als root ausführen oder manuell installieren (Docker: https://docs.docker.com/engine/install/)." >&2
+    exit 1
+  fi
+
+  {
+    echo ""
+    echo "Folgende Voraussetzungen fehlen und werden jetzt eingerichtet (benötigt sudo-Rechte):"
+    if [ "$need_docker" -eq 1 ]; then
+      echo "  - Docker Engine mit Compose-Plugin (offizielles Docker-apt-Repository), Dienst wird gestartet und beim Boot aktiviert"
+      echo "  - Ihr Benutzer wird zur Gruppe 'docker' hinzugefügt (das entspricht Root-Rechten auf diesem Rechner)"
+    fi
+    if [ "${#pkgs[@]}" -gt 0 ]; then
+      echo "  - Pakete: ${pkgs[*]}"
+    fi
+  } >&2
+  if ! confirm_system_setup "Jetzt einrichten?"; then
+    echo "Abgebrochen. Ohne Einrichtung bitte manuell installieren (Docker: https://docs.docker.com/engine/install/)." >&2
+    echo "Ohne Rückfrage: SOVEREIGNMIND_INSTALL_DOCKER=yes setzen." >&2
+    exit 1
+  fi
+  SYSTEM_SETUP_APPROVED=1
+
+  if [ "${#pkgs[@]}" -gt 0 ]; then
+    echo "==> Installiere Pakete: ${pkgs[*]}" >&2
+    apt_get update
+    apt_get install "${pkgs[@]}"
+  fi
+  if [ "$need_docker" -eq 1 ]; then
+    echo "==> Installiere Docker Engine" >&2
+    install_docker_engine
+  fi
+}
+
+# Docker-Dienst starten und dem Benutzer Zugriff ohne sudo geben. Ist die Gruppe 'docker' in dieser Shell noch nicht aktiv
+# (frisch hinzugefügt), startet sich das Skript einmal unter dieser Gruppe neu (sg); bei `curl | bash` geht das nicht,
+# dann bleibt nur der Hinweis, denselben Befehl in einem neuen Terminal zu wiederholen (der Installer ist idempotent).
+ensure_docker_access() {
+  [ "$(uname -s)" = "Linux" ] || return 0
+  docker info >/dev/null 2>&1 && return 0
+
+  if command -v systemctl >/dev/null 2>&1 && ! systemctl is-active --quiet docker; then
+    echo "==> Docker-Dienst läuft nicht - starte ihn und aktiviere den Autostart" >&2
+    as_root systemctl enable --now docker || {
+      echo "Fehler: Docker-Dienst konnte nicht gestartet werden ('sudo systemctl status docker' zeigt den Grund)." >&2
+      exit 1
+    }
+  fi
+  local i
+  for i in $(seq 1 30); do
+    as_root docker info >/dev/null 2>&1 && break
+    sleep 1
+  done
+  docker info >/dev/null 2>&1 && return 0
+  if ! as_root docker info >/dev/null 2>&1; then
+    echo "Fehler: Docker-Daemon nicht erreichbar ('sudo systemctl status docker' bzw. 'sudo journalctl -u docker' prüfen)." >&2
+    exit 1
+  fi
+
+  # Daemon läuft, aber der Benutzer darf den Socket nicht nutzen.
+  local user
+  user="$(id -un)"
+  if [ "$(id -u)" -ne 0 ]; then
+    case " $(id -nG "$user") " in
+      *" docker "*) ;; # schon Mitglied, nur in dieser Sitzung noch nicht aktiv
+      *)
+        if [ "$SYSTEM_SETUP_APPROVED" -ne 1 ] &&
+           ! confirm_system_setup "Benutzer '$user' zur Gruppe 'docker' hinzufügen (entspricht Root-Rechten)?"; then
+          echo "Ohne Zugriff auf Docker nicht möglich. Manuell: sudo usermod -aG docker $user, danach neu anmelden." >&2
+          exit 1
+        fi
+        echo "==> Füge '$user' zur Gruppe 'docker' hinzu" >&2
+        as_root usermod -aG docker "$user"
+        ;;
+    esac
+  fi
+  if [ -z "${SOVEREIGNMIND_DOCKER_REEXEC:-}" ] && [ -f "${BASH_SOURCE[0]:-}" ] && command -v sg >/dev/null 2>&1; then
+    echo "==> Starte den Installer mit aktiver Gruppe 'docker' neu" >&2
+    SOVEREIGNMIND_DOCKER_REEXEC=1 exec sg docker -c "$(printf '%q ' bash "${BASH_SOURCE[0]}" "$@")"
+  fi
+  echo "Docker ist eingerichtet, die Gruppe 'docker' ist in diesem Terminal aber noch nicht aktiv." >&2
+  echo "Bitte ein neues Terminal öffnen (oder abmelden und neu anmelden) und denselben Installationsbefehl erneut ausführen." >&2
+  exit 1
+}
+# --- docker-bootstrap end
+
+bootstrap_linux_prerequisites
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker nicht gefunden. Bitte zuerst installieren: https://docs.docker.com/get-docker/" >&2
   exit 1
 fi
+ensure_docker_access "$@"
 if ! docker compose version >/dev/null 2>&1; then
   echo "Docker-Compose-Plugin nicht gefunden ('docker compose'). Bitte Docker aktualisieren." >&2
   exit 1
