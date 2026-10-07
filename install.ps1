@@ -159,15 +159,10 @@ function Add-MissingConfigKeys {
 }
 
 function Confirm-XttsLicense {
-    # XTTS-v2 (GPU-Sprachausgabe) steht unter der Coqui Public Model License (nicht-kommerziell). Die Zustimmung
-    # darf nicht automatisch erfolgen: einmalig mit Lizenzhinweis abfragen und in config.jsonl festhalten.
-    if ($EnvValues["XTTS_LICENSE_ACCEPTED"]) { return }
-    Write-Host ""
-    Write-Host "Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (Coqui Public Model License, https://coqui.ai/cpml)."
-    Write-Host "  Die Lizenz erlaubt nur NICHT-KOMMERZIELLE Nutzung. Ohne Zustimmung nutzt die Sprachausgabe Piper (CPU)."
-    $Answer = Read-Host "Lizenz akzeptieren und XTTS-v2 aktivieren? [j/N]"
-    if ($Answer -match '^(j|ja|y|yes)$') { Set-ConfigValue "XTTS_LICENSE_ACCEPTED" "1" }
-    else { Set-ConfigValue "XTTS_LICENSE_ACCEPTED" "0" }
+    # XTTS-v2 (GPU-Sprachausgabe) steht unter der Coqui Public Model License (nicht-kommerziell). Standard ist
+    # XTTS_LICENSE_ACCEPTED=1 (config.jsonl): keine Abfrage, nur ein Hinweis; mit 0 nutzt die Sprachausgabe Piper (CPU).
+    if ($EnvValues["XTTS_LICENSE_ACCEPTED"] -eq "0") { return }
+    Write-Host "Hinweis: Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (CPML, nur nicht-kommerzielle Nutzung, https://coqui.ai/cpml). Abschalten: XTTS_LICENSE_ACCEPTED=0 in config.jsonl."
 }
 
 function Confirm-LicenseServerPrivacy {

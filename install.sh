@@ -122,7 +122,7 @@ else
   echo "==> Lade Compose-Dateien von GitHub (Ref: $REF)" >&2
 fi
 for f in docker-compose.yml docker-compose.images.yml docker-compose.nvidia.yml \
-  docker-compose.rocm.yml .env.example; do
+  docker-compose.rocm.yml docker-compose.gpu-monitor.yml .env.example; do
   echo "    $f" >&2
   fetch "8.Docker/$f" "$f"
 done
@@ -347,27 +347,34 @@ FILES=(-f docker-compose.yml -f docker-compose.images.yml)
 # Ollama läuft nativ auf dem Host (kein Container), s. docs/pläne/chat-voice-dokumente-ollama-native.
 ensure_native_ollama
 
-# GPU-Durchreichung für voice-worker (STT/TTS) und GPU-Erkennung im Backend (Nvidia). Ollama selbst läuft
-# nativ und braucht das Overlay nicht. Ein ROCm-Overlay gibt es hier bewusst nicht.
+# XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell). Standard ist XTTS_LICENSE_ACCEPTED=1 (config.jsonl),
+# der Installer fragt nicht nach und gibt nur einen Hinweis aus; mit 0 in config.jsonl nutzt die Sprachausgabe Piper (CPU).
+ask_xtts_license() {
+  [ "${XTTS_LICENSE_ACCEPTED:-1}" != "0" ] || return 0
+  echo "Hinweis: Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (CPML, nur nicht-kommerzielle Nutzung, https://coqui.ai/cpml). Abschalten: XTTS_LICENSE_ACCEPTED=0 in config.jsonl." >&2
+}
+
+# GPU-Durchreichung für voice-worker (STT/TTS) und GPU-Erkennung im Backend. Ollama selbst läuft nativ und
+# braucht das Overlay nicht.
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1 \
     && docker run --rm --gpus all busybox true >/dev/null 2>&1; then
   echo "GPU erkannt: Nvidia - reiche sie an voice-worker/backend durch (docker-compose.nvidia.yml)" >&2
   FILES+=(-f docker-compose.nvidia.yml)
+  ask_xtts_license
+elif rocm_gpu_usable; then
+  # AMD: nur XTTS (TTS) läuft über PyTorch/ROCm auf der GPU, faster-whisper (STT) bleibt auf der CPU. Eigenes
+  # voice-worker-Image (sovereignmind-voice-worker-rocm), Gruppen als numerische GIDs (kein "render" im Image).
+  echo "GPU erkannt: AMD - reiche sie an den voice-worker durch (docker-compose.rocm.yml; Sprachausgabe auf der GPU, Diktat auf der CPU)" >&2
+  FILES+=(-f docker-compose.rocm.yml)
+  set_rocm_gids persist
+  ask_xtts_license
+fi
 
-  # XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell): Zustimmung nie automatisch,
-  # sondern einmalig mit Lizenzhinweis abfragen und in config.jsonl festhalten.
-  if [ -z "${XTTS_LICENSE_ACCEPTED:-}" ]; then
-    {
-      echo ""
-      echo "Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (Coqui Public Model License, https://coqui.ai/cpml)."
-      echo "  Die Lizenz erlaubt nur NICHT-KOMMERZIELLE Nutzung. Ohne Zustimmung nutzt die Sprachausgabe Piper (CPU)."
-    } >&2
-    read -r -p "Lizenz akzeptieren und XTTS-v2 aktivieren? [j/N] " xtts_answer </dev/tty || xtts_answer=""
-    case "$xtts_answer" in
-      j|J|ja|Ja|y|Y|yes) config_set XTTS_LICENSE_ACCEPTED 1 ;;
-      *) config_set XTTS_LICENSE_ACCEPTED 0 ;;
-    esac
-  fi
+# Hardware-Dashboard unter Linux mit AMD-GPU: das Backend liest VRAM/Temperatur/Lüfter aus /sys des Hosts (rocm-smi gibt es im
+# Image nicht). Das Overlay bindet /sys schreibgeschützt ein, deshalb nur bei erkannter AMD-GPU.
+if amd_gpu_present; then
+  echo "AMD-GPU erkannt - binde /sys für das Hardware-Dashboard ein (docker-compose.gpu-monitor.yml)" >&2
+  FILES+=(-f docker-compose.gpu-monitor.yml)
 fi
 
 export SOVEREIGNMIND_VERSION="$VERSION"
