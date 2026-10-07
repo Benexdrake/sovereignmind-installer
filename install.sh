@@ -51,14 +51,6 @@ if [ "${1:-}" = "--remove-backup-schedule" ]; then
   exit 0
 fi
 
-cat <<'BANNER'
-
-    .-""-.
-   /  ()  \    SovereignMind
-   \      /    On-Premise KI-Gateway
-    '-..-'
-
-BANNER
 
 REPO="Benexdrake/SovereignMind"
 REF="${SOVEREIGNMIND_REF:-main}"
