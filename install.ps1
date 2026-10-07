@@ -71,20 +71,100 @@ elseif (-not $Token) {
     exit 1
 }
 
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    Write-Error "Docker nicht gefunden. Bitte zuerst Docker Desktop installieren: https://docs.docker.com/get-docker/"
-    exit 1
-}
-docker compose version | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Docker-Compose-Plugin nicht gefunden ('docker compose'). Bitte Docker Desktop aktualisieren."
-    exit 1
-}
-
 function Test-IsElevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Wait-DockerDaemon([int]$TimeoutSeconds = 300) {
+    # Windows PowerShell 5.1 macht aus stderr-Ausgaben nativer Programme (z. B. Docker-Warnungen) unter "Stop" einen Abbruch.
+    $ErrorActionPreference = "Continue"
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        docker info 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { return $true }
+        Start-Sleep -Seconds 5
+    }
+    return $false
+}
+
+function Install-Prerequisites {
+    # Windows PowerShell 5.1 macht aus stderr-Ausgaben nativer Programme (z. B. Docker-Warnungen) unter "Stop" einen Abbruch.
+    $ErrorActionPreference = "Continue"
+    # Frisch aufgesetztes Windows: WSL2 und Docker Desktop werden bei Bedarf installiert (winget), Docker Desktop
+    # gestartet und auf den Daemon gewartet. Idempotent - ist alles da, bleibt es bei Pruefungen. Nach der
+    # WSL-/Docker-Erstinstallation ist oft ein Neustart noetig: dann Hinweis und Abbruch, danach erneut starten.
+    # Nicht automatisch: der Nvidia-Treiber (nur Warnung).
+    $DockerBin = "C:\Program Files\Docker\Docker\resources\bin"
+    $DockerExe = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+    $DockerKnown = [bool](Get-Command docker -ErrorAction SilentlyContinue)
+
+    wsl.exe --version 2>$null | Out-Null
+    $WslOk = ($LASTEXITCODE -eq 0)
+    if (-not $WslOk -or -not $DockerKnown) {
+        if (-not (Test-IsElevated)) {
+            Write-Error "WSL2/Docker Desktop fehlen und muessen installiert werden - bitte dieses Skript in einer PowerShell als Administrator starten."
+            exit 1
+        }
+    }
+
+    if (-not $WslOk) {
+        Write-Host "==> Installiere WSL2 (wsl --install --no-distribution)"
+        wsl.exe --install --no-distribution
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "WSL-Installation fehlgeschlagen (Virtualisierung im BIOS aktiv?). Danach Skript erneut starten."
+            exit 1
+        }
+        Write-Warning "WSL2 wurde installiert. Bitte Windows NEU STARTEN und dieses Skript danach erneut ausfuehren."
+        exit 0
+    }
+    else {
+        # Docker Desktop braucht einen aktuellen WSL-Kernel (Daemon startet sonst nicht).
+        wsl.exe --update 2>$null | Out-Null
+    }
+
+    if (-not $DockerKnown) {
+        if (-not (Test-Path $DockerExe)) {
+            if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+                Write-Error "Docker Desktop fehlt und winget ist nicht verfuegbar. Bitte manuell installieren: https://docs.docker.com/get-docker/"
+                exit 1
+            }
+            Write-Host "==> Installiere Docker Desktop (winget)"
+            Write-Host "    Hinweis: Docker Desktop ist fuer Unternehmen mit >250 Mitarbeitern oder >10 Mio. USD Umsatz kostenpflichtig."
+            winget install -e --id Docker.DockerDesktop --accept-package-agreements --accept-source-agreements --silent
+            if ($LASTEXITCODE -ne 0 -and -not (Test-Path $DockerExe)) {
+                Write-Error "Installation von Docker Desktop fehlgeschlagen. Bitte manuell installieren: https://docs.docker.com/get-docker/"
+                exit 1
+            }
+        }
+        $env:Path += ";$DockerBin"
+    }
+
+    docker info 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        if (Test-Path $DockerExe) {
+            Write-Host "==> Starte Docker Desktop und warte auf den Daemon (beim ersten Start ggf. Lizenzdialog in Docker Desktop bestaetigen)"
+            Start-Process -FilePath $DockerExe
+        }
+        if (-not (Wait-DockerDaemon)) {
+            Write-Error "Der Docker-Daemon ist nach 5 Minuten nicht erreichbar. Docker Desktop oeffnen, Lizenz bestaetigen bzw. ggf. Windows neu starten, dann Skript erneut ausfuehren."
+            exit 1
+        }
+    }
+
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue) -and
+        (Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'NVIDIA' })) {
+        Write-Warning "Nvidia-GPU gefunden, aber kein Nvidia-Treiber (nvidia-smi fehlt) - Treiber von https://www.nvidia.com/drivers installieren, sonst laeuft die Sprachausgabe auf der CPU."
+    }
+}
+
+Install-Prerequisites
+
+docker compose version | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Docker-Compose-Plugin nicht gefunden ('docker compose'). Bitte Docker Desktop aktualisieren."
+    exit 1
 }
 
 function Get-DownloadSource {
@@ -114,6 +194,8 @@ function Test-NvidiaGpu {
 }
 
 function Test-NvidiaDockerReachable {
+    # Windows PowerShell 5.1 macht aus stderr-Ausgaben nativer Programme (z. B. Docker-Warnungen) unter "Stop" einen Abbruch.
+    $ErrorActionPreference = "Continue"
     # Wegwerf-Container statt reiner nvidia-smi-Pruefung: nvidia-smi auf dem Host reicht nicht, Docker
     # (WSL2-Backend) muss die GPU auch durchreichen koennen, sonst scheitert `docker compose up` an
     # "could not select device driver nvidia".
@@ -158,9 +240,34 @@ function Add-MissingConfigKeys {
     Write-Host "==> $($NewLines.Count) neue Konfigurationsschluessel in config.jsonl ergaenzt (Defaults, Werte pruefen): $($Added -join ', ')"
 }
 
+function Get-VramGb {
+    # Windows PowerShell 5.1 macht aus stderr-Ausgaben nativer Programme (z. B. Docker-Warnungen) unter "Stop" einen Abbruch.
+    $ErrorActionPreference = "Continue"
+    # Nvidia-VRAM in GB (gerundet), $null falls nicht ermittelbar. Gegenstueck zu detect_vram_gb in detect-vram.sh
+    # (nur der Nvidia-Zweig: AMD wird unter Windows nicht an Container durchgereicht).
+    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return $null }
+    $Mib = (nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>$null | Select-Object -First 1)
+    if ($Mib -and ("$Mib".Trim() -match '^\d+$')) { return [int][math]::Round([int]"$Mib".Trim() / 1024, [MidpointRounding]::AwayFromZero) }
+    return $null
+}
+
+# XTTS-v2 steht unter der Coqui Public Model License (nicht-kommerziell) und braucht neben dem Chat-Modell viel VRAM (ca. 4 GB).
+# Standard in config.jsonl ist XTTS_LICENSE_ACCEPTED="" (automatisch): bei mehr als 10 GB VRAM setzt der Installer 1 (GPU, mit
+# Hinweis, ohne Rueckfrage), sonst bleibt es leer und die Sprachausgabe nutzt Piper (CPU). Ein gesetzter Wert (0/1) bleibt unangetastet.
+$XttsMinVramGb = 10
 function Confirm-XttsLicense {
-    # XTTS-v2 (GPU-Sprachausgabe) steht unter der Coqui Public Model License (nicht-kommerziell). Standard ist
-    # XTTS_LICENSE_ACCEPTED=1 (config.jsonl): keine Abfrage, nur ein Hinweis; mit 0 nutzt die Sprachausgabe Piper (CPU).
+    if (-not $EnvValues["XTTS_LICENSE_ACCEPTED"]) {
+        $VramGb = Get-VramGb
+        if ($null -ne $VramGb -and $VramGb -gt $XttsMinVramGb) {
+            Set-ConfigValue "XTTS_LICENSE_ACCEPTED" "1"
+            Write-Host "==> $VramGb GB VRAM erkannt - XTTS-v2 (GPU-Sprachausgabe) wird aktiviert (XTTS_LICENSE_ACCEPTED=1 in config.jsonl)."
+        }
+        else {
+            $Shown = if ($null -ne $VramGb) { $VramGb } else { "unbekannt" }
+            Write-Host "==> $Shown GB VRAM erkannt (Schwelle: mehr als $XttsMinVramGb GB) - Sprachausgabe laeuft mit Piper auf der CPU."
+            return
+        }
+    }
     if ($EnvValues["XTTS_LICENSE_ACCEPTED"] -eq "0") { return }
     Write-Host "Hinweis: Die GPU-Sprachausgabe nutzt Coqui XTTS-v2 (CPML, nur nicht-kommerzielle Nutzung, https://coqui.ai/cpml). Abschalten: XTTS_LICENSE_ACCEPTED=0 in config.jsonl."
 }
@@ -665,6 +772,15 @@ if ($PortalUrl) {
     cmd /c "<nul set /p =$LicenseKey| docker login $PortalHost -u license --password-stdin"
     if ($LASTEXITCODE -ne 0) {
         Write-Error "docker login bei $PortalHost fehlgeschlagen. Lizenzschluessel und Adresse pruefen (HTTPS noetig, ausser localhost)."
+        exit 1
+    }
+}
+else {
+    Write-Host "==> Login bei ghcr.io"
+    # cmd statt Pipe: Windows PowerShell 5.1 haengt der Pipe ein Zeilenende/BOM an, das Token wuerde ungueltig.
+    cmd /c "<nul set /p =$Token| docker login ghcr.io -u $GithubUser --password-stdin"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "docker login bei ghcr.io fehlgeschlagen. SOVEREIGNMIND_GHCR_TOKEN (Scope read:packages) und GITHUB_USER pruefen."
         exit 1
     }
 }
