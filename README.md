@@ -74,6 +74,11 @@ sudo apt install ./sovereignmind-models_*.deb ./sovereignmind_*.deb
 Danach ist die Oberfläche unter <http://localhost:5043> erreichbar. Beim ersten Aufruf führt die App
 durch die Einrichtung (Lizenzschlüssel, Unternehmen, Admin-Passwort). Die Aktivierung läuft offline.
 
+Vor der Installation ist der Endnutzer-Lizenzvertrag (EULA) zu bestätigen: Das Windows-Setup zeigt ihn als Lizenzseite,
+das Linux-Paket fragt per debconf (`sovereignmind/accept-eula`). Ohne Zustimmung wird nicht installiert. Automatisierte
+Installation: Windows `/VERYSILENT` (gilt als Zustimmung), Linux vorab
+`echo 'sovereignmind sovereignmind/accept-eula boolean true' | sudo debconf-set-selections`.
+
 Prüfsummen stehen in `SHA256SUMS.txt` neben den Downloads.
 
 ## Betrieb
