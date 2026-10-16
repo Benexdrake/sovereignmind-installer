@@ -7,8 +7,7 @@ Chat-Assistent über die eigenen Firmendokumente (RAG), der komplett lokal beim 
 Dokumente und Prompts verlassen das Netzwerk nicht, es gibt keine Anbindung an OpenAI, Google
 oder andere Cloud-KI-APIs.
 
-Dieses Repo enthält nur das, was für die Installation gebraucht wird (Installer-Skripte,
-Compose-Dateien, Konfigurationsvorlagen). Der Quellcode ist nicht Teil davon.
+Dieses Repo enthält nur das, was für die Installation gebraucht wird. Der Quellcode ist nicht Teil davon.
 
 Präsentation: [SovereignMind Präsentation](https://claude.ai/artifact/D8hR37cBCNKZLZEfdcZSXo) (12 Folien zu Problem, Lösung, Architektur, Funktionen, Tech-Stack und Geschäftsmodell).
 
@@ -52,176 +51,32 @@ Web-Oberfläche ──> Backend (Auth, Rollen, Lizenz, Mandanten)
                       └─ PostgreSQL
 ```
 
-Alles läuft als Docker-Compose-Stack, mit einer Ausnahme: Ollama (Standard-Inferenz) läuft
-nativ auf dem Rechner und wird vom Installer bei Bedarf mitinstalliert. Die Docker-Images liegen
-in einer privaten Registry (GitHub Container Registry) und werden mit einem Zugangstoken geladen.
+Alles läuft nach der Installation als Dienst im Hintergrund. Es ist weder Docker noch WSL noch
+sonst eine Vorarbeit nötig; Ollama und die Modelle liefert der Installer mit.
 
 ## Voraussetzungen
 
-- Docker mit Compose-Plugin (Docker Desktop unter Windows und macOS). Unter Ubuntu/Debian
-  installiert und startet der Installer Docker bei Bedarf selbst, siehe „Linux: frisches System“
-- Internetzugang für Installation und den ersten Modell-Download (ca. 5 GB Worker-Modelle,
-  zusätzlich zu den Ollama-Modellen; unter Windows lädt der
-  Installer zusätzlich Ollama, ca. 1,5 GB, sofern es fehlt)
-- Für gute Antwortzeiten eine GPU mit ausreichend VRAM. Ohne GPU läuft alles auf der CPU,
-  deutlich langsamer. Unter Windows mit AMD-GPU kommt die GPU nur bei nativ installiertem
-  Ollama zum Einsatz (in Docker-Containern läuft das Modell dort auf CPU und RAM), deshalb
-  installiert der Installer Ollama direkt auf dem Rechner
-- Optional, nur Windows: Administratorrechte für den Hardware-Agent (Windows-Dienst, der echte
-  CPU-/RAM-/GPU-Werte fürs Hardware-Dashboard liefert; der Installer fragt danach)
-- Ein Zugangstoken (siehe unten)
-- Windows 10/11, Linux oder macOS
-
-## Zugangstoken
-
-Die Images sind nicht öffentlich. Für den Download brauchst du ein Token mit der Berechtigung
-`read:packages`. Es wird dir vom Anbieter bereitgestellt, hat nur Lesezugriff auf die Images,
-läuft ab und kann jederzeit widerrufen werden. Nach Ablauf bitte ein neues anfordern.
-
-Das Token gehört dir allein. Nicht weitergeben und nicht in Repos oder Chats posten.
+- Windows 10 (1809) / 11 / Server 2019+ (x64) oder Ubuntu 24.04 / Debian 12 (x64)
+- Administratorrechte (Windows) bzw. `sudo` (Linux)
+- Für gute Antwortzeiten eine GPU mit ausreichend VRAM; ohne GPU läuft alles auf der CPU, deutlich langsamer
+- Ein Lizenzschlüssel (Token) und die E-Mail-Adresse, auf die er ausgestellt wurde (vom Anbieter)
 
 ## Installation
 
-Linux / macOS:
+Windows: `SovereignMind-Setup-<Version>.exe` aus den Releases herunterladen und ausführen.
+
+Linux:
 
 ```bash
-export SOVEREIGNMIND_GHCR_TOKEN=<dein-token>
-curl -fsSL https://raw.githubusercontent.com/Benexdrake/sovereignmind-installer/main/install.sh | bash
+sudo apt install ./sovereignmind-models_*.deb ./sovereignmind_*.deb
 ```
 
-Windows (PowerShell):
+Danach ist die Oberfläche unter <http://localhost:5043> erreichbar. Beim ersten Aufruf führt die App
+durch die Einrichtung (Lizenzschlüssel, Unternehmen, Admin-Passwort). Die Aktivierung läuft offline.
 
-```powershell
-$env:SOVEREIGNMIND_GHCR_TOKEN = "<dein-token>"
-irm https://raw.githubusercontent.com/Benexdrake/sovereignmind-installer/main/install.ps1 | iex
-```
+Prüfsummen stehen in `SHA256SUMS.txt` neben den Downloads.
 
-### Linux: frisches System
+## Betrieb
 
-Auf einem frisch installierten Ubuntu/Debian ist keine Vorarbeit nötig. Fehlt etwas, nennt der
-Installer es und fragt einmal nach (sudo-Passwort wird bei Bedarf abgefragt):
-
-- Docker Engine mit Compose-Plugin aus dem offiziellen Docker-apt-Repository; der Dienst wird
-  gestartet und beim Boot aktiviert
-- dein Benutzer wird zur Gruppe `docker` hinzugefügt (das entspricht Root-Rechten auf dem Rechner)
-- `curl`, und falls Ollama fehlt, `zstd` und `pciutils` (der Ollama-Installer braucht sie, u. a. für
-  die Erkennung der AMD-/Nvidia-GPU)
-
-Ist die Gruppe `docker` im aktuellen Terminal noch nicht aktiv, startet sich der Installer bei
-Aufruf als Datei (`bash install.sh`) selbst neu. Bei `curl … | bash` geht das nicht: dann bitte ein
-neues Terminal öffnen und denselben Befehl erneut ausführen (der Installer ist idempotent).
-
-Ohne Rückfrage (z. B. per SSH ohne Terminal): `SOVEREIGNMIND_INSTALL_DOCKER=yes` setzen. Andere
-Distributionen als Ubuntu/Debian müssen Docker selbst installieren
-(<https://docs.docker.com/engine/install/>).
-
-Danach ist die App unter <http://localhost:3000> erreichbar. Beim ersten Aufruf leitet sie auf
-`/setup` weiter, wo aus der Lizenzdatei das Unternehmen und der erste Admin angelegt werden.
-Beim ersten Start werden die KI-Modelle geladen, das dauert je nach Verbindung einige Minuten.
-
-Der Installer legt das Verzeichnis `./sovereignmind` an, lädt die Konfiguration, zieht die Images
-und startet den Stack. Erneutes Ausführen aktualisiert auf die neueste Version. Vorhandene
-`.env`, `config.jsonl` und `models.json` bleiben dabei unverändert.
-
-> Hinweis: Die Aufrufe oben gelten für den Zielzustand. Solange der Installer noch nicht auf
-> öffentliche Downloads umgestellt ist (siehe Plan `install-token-testzugang`), braucht er
-> zusätzlich Zugriff auf das private Hauptrepo.
-
-### Einstellungen
-
-| Variable | Bedeutung | Standard |
-|---|---|---|
-| `SOVEREIGNMIND_GHCR_TOKEN` | Zugangstoken (`read:packages`) | – |
-| `SOVEREIGNMIND_INSTALL_DOCKER` | Linux: fehlendes Docker, Docker-Gruppe und Hilfsprogramme ohne Rückfrage einrichten (`yes`) oder ablehnen (`no`) | Rückfrage am Terminal |
-| `GITHUB_USER` | Benutzername für `docker login` (optional) | `Benexdrake` |
-| `SOVEREIGNMIND_DIR` | Installationsverzeichnis | `./sovereignmind` |
-| `SOVEREIGNMIND_REF` | Version (Tag oder Branch) | `main` |
-
-Weitere Einstellungen (Ports, Impressum, Ollama, Logging) stehen mit
-Erklärung in der `config.jsonl` im Installationsverzeichnis. Geheimnisse gehören in die `.env`.
-
-## Stoppen und Updates
-
-```bash
-cd sovereignmind
-docker compose down          # stoppen, Daten bleiben erhalten
-docker compose down -v       # stoppen und alle Docker-Daten löschen (auch die Datenbank!)
-```
-
-Das nativ installierte Ollama und seine Modelle sind davon nicht betroffen.
-
-Update: Installer erneut ausführen.
-
-## Installation ohne GitHub-Token (Portal-Modus)
-
-Betreibt der Anbieter einen Lizenzserver, genügen dessen Adresse und der Lizenzschlüssel (`SM-…`); ein GitHub-Token wird nicht gebraucht.
-Dateien und Images kommen vom Lizenzserver, die Online-Aktivierung der Lizenz ist gleich mit eingerichtet (Schlüssel und Adresse stehen in `.env`).
-
-```bash
-SOVEREIGNMIND_PORTAL_URL=https://portal.example.com SOVEREIGNMIND_LICENSE_KEY=SM-XXXXX-... bash install.sh
-```
-
-```powershell
-$env:SOVEREIGNMIND_PORTAL_URL = "https://portal.example.com"
-$env:SOVEREIGNMIND_LICENSE_KEY = "SM-XXXXX-..."
-.\install.ps1
-```
-
-`docker login` verlangt für den Lizenzserver HTTPS (außer bei `localhost`). Der Hardware-Agent (Windows) wird in diesem Modus nicht
-mitinstalliert, er kommt aus GitHub-Releases. Ohne `SOVEREIGNMIND_PORTAL_URL` läuft der Installer unverändert mit dem GitHub-Token.
-
-## Für den Betreiber: Lizenzserver aufbauen
-
-`install-license-server.sh` bzw. `install-license-server.ps1` richten den Betreiber-Stack ein (Lizenzserver, Postgres, optional Caddy mit TLS).
-Nie beim Kunden ausführen.
-
-```bash
-SOVEREIGNMIND_GHCR_TOKEN=<token> bash install-license-server.sh                                    # nur 127.0.0.1:5100
-SOVEREIGNMIND_GHCR_TOKEN=<token> PORTAL_DOMAIN=portal.example.com bash install-license-server.sh  # mit TLS (Ports 80/443)
-```
-
-Beim ersten Lauf erzeugt der Server seine Geheimnisse (Signaturschlüssel, Admin-Schlüssel) und zeigt den Admin-Schlüssel **einmalig** an;
-der öffentliche Schlüssel steht in `secrets/license_public.pem`. Der GHCR-Token liegt nur in `.env` (Rechte 600). Sichern mit
-`backup-license-server.sh` (Datenbank, `secrets/`, Katalog); `secrets/` unbedingt getrennt aufbewahren.
-
-## Datensicherung
-
-Die Datenbank liegt im Docker-Volume `postgres-data`, alles Übrige (Dokumente, Schlüssel, Lizenz)
-im Volume `backend-data`. Datenbank und Schlüsselordner gehören zusammen: ohne die Schlüssel sind
-gespeicherte Connector-Zugangsdaten unlesbar.
-
-Datenbank, Schlüssel, Lizenz und Dokumente sichern und wiederherstellen (im Installationsverzeichnis):
-
-```bash
-bash backup-db.sh                    # -> backups/<Zeitstempel>/ (Dump, Schlüssel, Lizenz, Dokumente, Prüfsummen)
-bash restore-db.sh backups/<Ordner>  # fragt vorher nach, legt vorher einen Sicherheits-Dump an
-```
-
-Unter Windows: `.\backup-db.ps1` bzw. `.\restore-db.ps1 backups\<Ordner>`. Der Installer bietet ein
-tägliches Backup an (Standard 02:00; Windows: Aufgabe `SovereignMind-Backup`, Linux/macOS: cron).
-Aufbewahrung, Zweitziel und Uhrzeit stehen in der `config.jsonl` (`BACKUP_*`). Die
-`config.jsonl` (enthält das Zertifikat für die Schlüsselverschlüsselung) getrennt vom
-Backup-Ordner aufbewahren, den Ordner `backups/` geschützt. Qdrant ist nicht enthalten
-(Dokumente werden neu eingelesen).
-
-**Das Backup enthält keine Zertifikate.** Zusätzlich ein Recovery-Kit anlegen (`bash recovery-kit.sh export` bzw.
-`.ecovery-kit.ps1 export`) und es **getrennt vom Volume und von den Backups** aufbewahren. Was bei Verlust von
-Zertifikat oder `config.jsonl` zu tun ist: [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md).
-
-| Verloren | Folge |
-|---|---|
-| DataProtection-Zertifikat | Paketschlüssel und Connector-Geheimnisse unlesbar (Warnbanner im Admin-Bereich) |
-| `JWT_SECRET` | alle Anmeldungen ungültig, keine Datenverluste |
-| `LICENSE_KEY` / `LICENSE_SERVER_URL` | Heartbeat und Paketschlüssel-Abruf stoppen |
-| `GHCR_TOKEN` | keine Updates, Betrieb läuft |
-
-## Sicherheitshinweis
-
-`docker login` speichert das Token je nach System im Credential-Store oder unverschlüsselt in
-`~/.docker/config.json`. Auf gemeinsam genutzten Rechnern nach der Installation `docker logout
-ghcr.io` ausführen.
-
-## Hilfe
-
-Bei Problemen mit Installation oder Token bitte beim Anbieter melden und die Ausgabe des
-Installers mitschicken.
+Update, Sicherung, Wiederherstellung (Recovery-Kit) und Deinstallation beschreibt das Betreiber-Handbuch,
+das mit dem Anbieter-Support ausgeliefert wird.
