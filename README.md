@@ -37,8 +37,14 @@ ist die selbst gehostete Alternative.
   abzulegen.
 - **Sprache:** Diktat und Vorlesen, lokal verarbeitet; der Admin schaltet beides pro
   Unternehmen frei.
+- **Wissenspakete:** Vorverarbeitete Gesetze und Regelwerke als signierte Pakete, die der Admin
+  aus dem Katalog installiert oder als Datei importiert.
+- **Themes:** Jeder Nutzer wählt Stil, Hell/Dunkel und Akzentfarbe; das Unternehmen kann eine
+  Akzentfarbe vorgeben.
+- **Support-Nachrichten:** Nutzer schreiben dem Admin über ein Kontaktformular.
 - **Admin-Bereich:** Nutzer, Dokumente, Branding, Lizenz, KI-Einstellungen (Modelle, Assistenten,
-  Vorlagen, Sprache), Nutzungsstatistik, Logs, Hardware-Dashboard.
+  Vorlagen, Sprache), Wissenspakete, Support, Nutzungsstatistik, Logs, Hardware-Dashboard
+  (unter Windows auf Wunsch mit Companion-Agent für genaue Host-Werte).
 
 ## Architektur in Kürze
 
@@ -47,7 +53,7 @@ Web-Oberfläche ──> Backend (Auth, Rollen, Lizenz, Mandanten)
                       ├─ Inferenz (Ollama)
                       ├─ Vektordatenbank (Qdrant)
                       ├─ Dokumentenverarbeitung (Docling)
-                      ├─ Sprache (optional)
+                      ├─ Sprache (Diktat/Vorlesen)
                       └─ PostgreSQL
 ```
 
